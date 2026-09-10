@@ -1,0 +1,12 @@
+# Environment variables and virtual environments
+.env/
+config.env
+dbconfig.env
+
+# Editor and Jupyter folders
+.vscode/
+.ipynb_checkpoints/
+__pycache__/
+
+# Data files (Prevents pushing large CSVs to GitHub)
+data/
