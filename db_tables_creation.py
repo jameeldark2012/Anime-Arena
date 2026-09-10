@@ -26,7 +26,7 @@ class Anime(Model):
 class Player(Model):
 
   user_id = fields.BigIntField(pk=True , generated = False)  # Discord ID as primary key
-
+  
 class Character(Model):
   
   character_id = fields.IntField(pk=True , generated = False)
