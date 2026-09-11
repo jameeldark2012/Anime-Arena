@@ -8,6 +8,7 @@ from discord.ext import commands
 
 from core.config import settings
 from services import (
+    get_all_players_with_characters,
     get_cached_characters,
     get_current_character,
     prefetch_characters,
@@ -104,3 +105,32 @@ async def reserve(
         message = "I couldn't reserve that character right now. Please try again in a moment."
 
     await interaction.followup.send(message)
+
+
+
+@bot.tree.command(name="players", description="Show all players and their reserved characters")
+async def players(interaction: discord.Interaction) -> None:
+    await interaction.response.defer()
+
+    entries = await get_all_players_with_characters()
+    if not entries:
+        await interaction.followup.send("No players have registered yet.")
+        return
+
+    lines: list[str] = []
+    for player, character in entries:
+        user = interaction.guild.get_member(player.user_id) if interaction.guild else None
+        if user is None:
+            try:
+                user = await bot.fetch_user(player.user_id)
+            except discord.NotFound:
+                pass
+        name = user.display_name if user else str(player.user_id)
+
+        if character:
+            anime_name = character.anime.anime_name if character.anime else "Unknown Anime"
+            lines.append(f"**{name}** — {character.character_name} (*{anime_name}*)")
+        else:
+            lines.append(f"**{name}** — *No character reserved*")
+
+    await interaction.followup.send("\n".join(lines))
