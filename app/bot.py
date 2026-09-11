@@ -4,7 +4,6 @@ import discord
 from discord.ext import commands
 
 from core.config import settings
-from services.ping_service import build_ping_message
 
 intents = discord.Intents.default()
 
@@ -23,6 +22,3 @@ async def on_ready() -> None:
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
 
 
-@bot.tree.command(name="ping", description="Test command")
-async def ping(interaction: discord.Interaction) -> None:
-    await interaction.response.send_message(build_ping_message())

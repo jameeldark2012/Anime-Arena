@@ -2,6 +2,7 @@
 .env/
 config.env
 dbconfig.env
+debug.log
 
 # Editor and Jupyter folders
 .vscode/
