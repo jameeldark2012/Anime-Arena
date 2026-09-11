@@ -3,6 +3,7 @@
 config.env
 dbconfig.env
 debug.log
+.refact/
 
 # Editor and Jupyter folders
 .vscode/
