@@ -194,7 +194,12 @@ async def record_action(
     # ── Download and cache the clip ───────────────────────────────────────────
     clip_bytes = await _download(attachment.url)
     if clip_bytes is not None:
-        match_state.video_cache.setdefault(player_id, []).append(clip_bytes)
+        label = action["action_type"].upper() + (f" ({action['tier']})" if action.get("tier") else "")
+        match_state.video_cache.setdefault(player_id, []).append({
+            "bytes": clip_bytes,
+            "label": label,
+            "filename": attachment.filename,
+        })
 
     # ── Build feedback message ────────────────────────────────────────────────
     summary = " → ".join(

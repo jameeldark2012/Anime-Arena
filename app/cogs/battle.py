@@ -280,28 +280,37 @@ class BattleCog(commands.Cog):
             await interaction.followup.send(message, ephemeral=True)
             return
 
-        # ── Build files from cached clips ─────────────────────────────────────
+        # ── Acknowledge the interaction silently, then post everything via
+        #    channel.send so all messages share the same pipeline and order
+        #    is guaranteed (clips first, status embed last).
+        await interaction.followup.send("✅ Turn locked in.", ephemeral=True)
+
         acting_id = turn_summary["acting_player_id"]
-        files: list[discord.File] = []
-        cached = match_state.video_cache.pop(acting_id, [])
-        for i, clip_bytes in enumerate(cached):
-            files.append(discord.File(io.BytesIO(clip_bytes), filename=f"clip_{acting_id}_{i+1}.mp4"))
+        cached: list[dict] = match_state.video_cache.pop(acting_id, [])
 
-        embed = await generate_turn_embed(match_state, turn_summary)
-
-        # Public turn summary line.
         actions = turn_summary["actions"]
-        if actions:
-            action_line = " → ".join(
+        action_line = (
+            " → ".join(
                 a["action_type"].upper() + (f" ({a['tier']})" if a.get("tier") else "")
                 for a in actions
             )
-        else:
-            action_line = "PASSED"
+            if actions else "PASSED"
+        )
 
-        content = f"⚔️ **<@{acting_id}>** ended their turn: **{action_line}**"
+        # 1. Clips in submission order.
+        total = len(cached)
+        for i, clip in enumerate(cached, start=1):
+            await interaction.channel.send(
+                content=f"📹 **Clip {i}/{total} — {clip['label']}** (<@{acting_id}>)",
+                file=discord.File(io.BytesIO(clip["bytes"]), filename=clip["filename"]),
+            )
 
-        await interaction.followup.send(content=content, files=files, embed=embed)
+        # 2. Status embed last.
+        embed = await generate_turn_embed(match_state, turn_summary)
+        await interaction.channel.send(
+            content=f"⚔️ **<@{acting_id}>** ended their turn: **{action_line}**",
+            embed=embed,
+        )
 
         # ── Match over ────────────────────────────────────────────────────────
         if turn_summary["winner_id"]:
