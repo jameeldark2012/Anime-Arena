@@ -340,6 +340,30 @@ class BattleCog(commands.Cog):
             f"{ref_ping} Please review this match immediately."
         )
 
+    @app_commands.command(name="surrender", description="Forfeit the match and give your opponent the win")
+    async def surrender(self, interaction: discord.Interaction) -> None:
+        match_state, err = self._validate(interaction)
+        if err:
+            await interaction.response.send_message(err, ephemeral=True)
+            return
+
+        loser_id = interaction.user.id
+        winner_id = (
+            match_state.player2_id
+            if loser_id == match_state.player1_id
+            else match_state.player1_id
+        )
+
+        match_state.status = "finished"
+        match_manager.remove_match(match_state.match_id)
+
+        ref_ping = f"<@&{settings.REFEREE_ROLE_ID}>" if settings.REFEREE_ROLE_ID else "@here"
+        await interaction.response.send_message(
+            f"🏳️ <@{loser_id}> has **surrendered**!\n"
+            f"🏆 <@{winner_id}> wins the match by forfeit!\n"
+            f"{ref_ping}"
+        )
+
 
 async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(BattleCog(bot))
