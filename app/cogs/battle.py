@@ -74,16 +74,13 @@ class TierSelectView(discord.ui.View):
 
         attachment = msg.attachments[0]
 
-        try:
-            await msg.delete()
-        except discord.HTTPException:
-            pass
-
         match_state = match_manager.get_match(interaction.channel_id)
         if not match_state:
             await interaction.edit_original_response(content="This is not an active match channel.")
             return
 
+        # Download and register the action BEFORE deleting the message.
+        # Discord CDN URLs become inaccessible once the source message is deleted.
         success, reply, _resolution = await record_action(
             match_state=match_state,
             player_id=interaction.user.id,
@@ -91,6 +88,12 @@ class TierSelectView(discord.ui.View):
             tier=tier,
             attachment=attachment,
         )
+
+        # Now safe to delete — bytes are already cached in match_state.
+        try:
+            await msg.delete()
+        except discord.HTTPException:
+            pass
 
         await interaction.edit_original_response(content=reply if success else f"❌ {reply}")
 
@@ -233,11 +236,8 @@ class BattleCog(commands.Cog):
             return
 
         attachment = msg.attachments[0]
-        try:
-            await msg.delete()
-        except discord.HTTPException:
-            pass
 
+        # Download first, then delete.
         success, reply, _ = await record_action(
             match_state=match_state,
             player_id=interaction.user.id,
@@ -245,6 +245,12 @@ class BattleCog(commands.Cog):
             tier=None,
             attachment=attachment,
         )
+
+        try:
+            await msg.delete()
+        except discord.HTTPException:
+            pass
+
         await interaction.edit_original_response(content=reply if success else f"❌ {reply}")
 
     @app_commands.command(
