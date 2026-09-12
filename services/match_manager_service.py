@@ -68,6 +68,8 @@ class MatchState:
 class MatchManagerService:
     def __init__(self) -> None:
         self._active_matches: dict[int, MatchState] = {}
+        # Tracks active match pairs as frozensets so {A, B} == {B, A}.
+        self._active_pairs: set[frozenset] = set()
 
     async def create_match_post(
         self,
@@ -78,6 +80,11 @@ class MatchManagerService:
         """Creates a forum post in the configured matches channel and initializes MatchState."""
         if not settings.MATCHES_FORUM_CHANNEL_ID:
             return None, "MATCHES_FORUM_CHANNEL_ID is not configured in environment settings."
+
+        # Reject only if this exact pair already has an active match together.
+        pair = frozenset({player1_id, player2_id})
+        if pair in self._active_pairs:
+            return None, "These two players already have an active match against each other!"
 
         channel = guild.get_channel(settings.MATCHES_FORUM_CHANNEL_ID)
         if not isinstance(channel, discord.ForumChannel):
@@ -129,13 +136,17 @@ class MatchManagerService:
         )
 
         self._active_matches[match_state.match_id] = match_state
+        self._active_pairs.add(pair)
         return match_state, None
 
     def get_match(self, match_id: int) -> MatchState | None:
         return self._active_matches.get(match_id)
 
     def remove_match(self, match_id: int) -> MatchState | None:
-        return self._active_matches.pop(match_id, None)
+        match_state = self._active_matches.pop(match_id, None)
+        if match_state:
+            self._active_pairs.discard(frozenset({match_state.player1_id, match_state.player2_id}))
+        return match_state
 
 
 match_manager = MatchManagerService()
