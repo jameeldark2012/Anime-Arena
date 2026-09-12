@@ -162,6 +162,9 @@ async def record_action(
     if player_id != match_state.current_player_id:
         return False, "It's not your turn.", None
 
+    if match_state.is_paused:
+        return False, "⏸️ This match has been paused by a referee. Wait for them to resolve the objection.", None
+
     if not attachment.filename.lower().endswith(('.mp4', '.mov', '.webm', '.mkv')):
         return False, "Please upload a valid video file (.mp4, .mov, .webm, .mkv).", None
 
@@ -236,6 +239,9 @@ async def end_turn(
     if player_id != match_state.current_player_id:
         return False, "It's not your turn.", None
 
+    if match_state.is_paused:
+        return False, "⏸️ This match has been paused by a referee. Wait for them to resolve the objection.", None
+
     # ── Resolve pending attack if player ends turn without any actions ────────
     resolution = match_state.last_resolution  # already set if they submitted actions
     if match_state.pending_attack is not None and resolution is None:
@@ -294,6 +300,9 @@ async def end_turn(
     match_state.last_resolution = None
     match_state.current_turn += 1
     match_state.current_player_id = opp_id
+
+    # Snapshot the state after this turn completes (used by referee rollback).
+    match_state._snapshot()
 
     return True, "Turn ended.", turn_summary
 

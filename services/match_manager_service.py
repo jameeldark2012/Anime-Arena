@@ -58,11 +58,58 @@ class MatchState:
 
         # In-memory video cache {player_id: [bytes, ...]}
         self.video_cache: dict[int, list[bytes]] = {}
-        
+
         self.status = "active"  # active, finished
         self.has_objection = False
         self.winner_id: int | None = None
         self.loser_id: int | None = None
+
+        # ---------- referee controls ------------------------------------------
+        # When True, all combat actions are blocked until a referee resumes.
+        self.is_paused: bool = False
+
+        # Ordered list of state snapshots taken at the end of each completed turn.
+        # Each snapshot is a plain dict capturing the full restorable game state.
+        # Index 0 = state before turn 1 (match start), index N = after turn N.
+        self.state_history: list[dict] = []
+        # Immediately snapshot the initial state (turn 0).
+        self._snapshot()
+
+    # ------------------------------------------------------------------
+    def _snapshot(self) -> None:
+        """Capture the current restorable game state and push it to history."""
+        import copy
+        self.state_history.append({
+            "turn": self.current_turn,
+            "player1_hp": self.player1_hp,
+            "player2_hp": self.player2_hp,
+            "current_player_id": self.current_player_id,
+            "pending_attack": copy.deepcopy(self.pending_attack),
+            "pending_attacker_id": self.pending_attacker_id,
+            "status": self.status,
+        })
+
+    def restore_snapshot(self, index: int) -> bool:
+        """Restore game state to snapshot at `index`. Returns False if index is invalid."""
+        if index < 0 or index >= len(self.state_history):
+            return False
+        snap = self.state_history[index]
+        import copy
+        self.player1_hp = snap["player1_hp"]
+        self.player2_hp = snap["player2_hp"]
+        self.current_player_id = snap["current_player_id"]
+        self.pending_attack = copy.deepcopy(snap["pending_attack"])
+        self.pending_attacker_id = snap["pending_attacker_id"]
+        self.current_turn = snap["turn"]
+        self.status = snap["status"]
+        # Trim history forward of the restored point.
+        self.state_history = self.state_history[:index + 1]
+        # Clear any in-progress turn state.
+        self.current_turn_actions = []
+        self.last_resolution = None
+        self.is_paused = False
+        self.has_objection = False
+        return True
 
 
 class MatchManagerService:

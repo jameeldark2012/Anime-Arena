@@ -333,10 +333,18 @@ class BattleCog(commands.Cog):
             )
             return
 
+        if interaction.user.id not in (match_state.player1_id, match_state.player2_id):
+            await interaction.response.send_message(
+                "You are not a participant in this match.", ephemeral=True
+            )
+            return
+
         match_state.has_objection = True
+        match_state.is_paused = True
         ref_ping = f"<@&{settings.REFEREE_ROLE_ID}>" if settings.REFEREE_ROLE_ID else "@here"
         await interaction.response.send_message(
             f"🚨 **OBJECTION BY <@{interaction.user.id}>!** 🚨\n"
+            f"⏸️ **Match is now PAUSED.** No actions can be submitted until a referee resolves this.\n"
             f"{ref_ping} Please review this match immediately."
         )
 
