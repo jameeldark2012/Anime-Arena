@@ -35,8 +35,8 @@ class MatchmakingCog(commands.Cog):
             return
 
         await interaction.followup.send(
-            f"Match successfully created! Head over to the **#matches** channel to fight.\n"
-            f"It is <@{match_state.current_player_to_act_id}>'s turn to act."
+            f"Match successfully created! Head over to the matches channel to fight.\n"
+            f"<@{match_state.current_player_id}> goes first!"
         )
 
 
