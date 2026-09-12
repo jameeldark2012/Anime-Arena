@@ -9,6 +9,8 @@ from discord.ext import commands
 from core.config import settings
 
 intents = discord.Intents.default()
+intents.message_content = True  # Required for wait_for("message") to receive attachment uploads
+intents.messages = True          # Required to receive guild message events at all
 bot = commands.Bot(command_prefix="!", intents=intents)
 logger = logging.getLogger(__name__)
 
