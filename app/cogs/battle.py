@@ -7,6 +7,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from services.match_manager_service import match_manager
+from boss.boss_manager import boss_manager
 from services.combat_service import (
     record_action,
     end_turn,
@@ -122,6 +123,24 @@ class BattleCog(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
+    async def _delegate_boss_command(
+        self, interaction: discord.Interaction, handler_name: str
+    ) -> bool:
+        """Route normal battle commands to their boss equivalents in boss threads."""
+        if not boss_manager.get_fight(interaction.channel_id):
+            return False
+
+        boss_cog = self.bot.get_cog("BossBattleCog")
+        handler = getattr(boss_cog, handler_name, None) if boss_cog else None
+        if handler is None:
+            await interaction.response.send_message(
+                "Boss battle commands are temporarily unavailable.", ephemeral=True
+            )
+            return True
+
+        await handler(interaction)
+        return True
+
     def _validate(
         self, interaction: discord.Interaction
     ) -> tuple[object | None, str | None]:
@@ -189,6 +208,8 @@ class BattleCog(commands.Cog):
 
     @app_commands.command(name="attack", description="Declare your attack and upload your clip")
     async def attack(self, interaction: discord.Interaction) -> None:
+        if await self._delegate_boss_command(interaction, "submit_attack"):
+            return
         await self._send_tier_view(interaction, "attack")
 
     @app_commands.command(
@@ -196,6 +217,8 @@ class BattleCog(commands.Cog):
         description="Declare a defense and upload your clip. Can be used multiple times.",
     )
     async def defend(self, interaction: discord.Interaction) -> None:
+        if await self._delegate_boss_command(interaction, "submit_defense"):
+            return
         await self._send_tier_view(interaction, "defense")
 
     @app_commands.command(
@@ -203,6 +226,8 @@ class BattleCog(commands.Cog):
         description="Submit a custom action clip (special ability, etc). No combat effect.",
     )
     async def custom(self, interaction: discord.Interaction) -> None:
+        if await self._delegate_boss_command(interaction, "submit_custom"):
+            return
         match_state, err = self._validate(interaction)
         if err:
             await interaction.response.send_message(err, ephemeral=True)
@@ -258,6 +283,8 @@ class BattleCog(commands.Cog):
         description="Lock in your actions and pass the turn to your opponent.",
     )
     async def end_turn_cmd(self, interaction: discord.Interaction) -> None:
+        if await self._delegate_boss_command(interaction, "finish_player_turn"):
+            return
         await interaction.response.defer(thinking=True, ephemeral=False)
 
         match_state = match_manager.get_match(interaction.channel_id)
@@ -343,6 +370,8 @@ class BattleCog(commands.Cog):
 
     @app_commands.command(name="surrender", description="Forfeit the match and give your opponent the win")
     async def surrender(self, interaction: discord.Interaction) -> None:
+        if await self._delegate_boss_command(interaction, "forfeit"):
+            return
         match_state, err = self._validate(interaction)
         if err:
             await interaction.response.send_message(err, ephemeral=True)

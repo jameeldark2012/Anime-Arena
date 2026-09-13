@@ -4,7 +4,7 @@ config.env
 dbconfig.env
 debug.log
 .refact/
-
+assets/
 # Editor and Jupyter folders
 .vscode/
 .ipynb_checkpoints/

@@ -5,6 +5,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from services.match_manager_service import match_manager, MatchState
+from boss.boss_manager import boss_manager
 from core.config import settings
 
 REFEREE_ROLE_NAME = "Referee"
@@ -37,11 +38,23 @@ def referee_only() -> app_commands.check:
 # ---------------------------------------------------------------------------
 
 def _get_match(interaction: discord.Interaction) -> tuple[MatchState | None, str | None]:
-    """Resolve match from the current channel. Returns (match, error)."""
+    """Resolve match from the current channel. Checks PvP matches first, then boss fights."""
     match_state = match_manager.get_match(interaction.channel_id)
-    if not match_state:
-        return None, "No active match found in this channel."
-    return match_state, None
+    if match_state:
+        return match_state, None
+    boss_state = boss_manager.get_fight(interaction.channel_id)
+    if boss_state:
+        return boss_state, None
+    return None, "No active match found in this channel."
+
+
+def _remove_match(match_state: MatchState) -> None:
+    """Remove a match from whichever store (PvP or boss) holds it."""
+    from boss.boss_state import BossState as _BossState
+    if isinstance(match_state, _BossState):
+        boss_manager.remove_fight(match_state.match_id)
+    else:
+        match_manager.remove_match(match_state.match_id)
 
 
 def _hp_bar(hp: int, max_hp: int = 4) -> str:
@@ -205,7 +218,7 @@ class RefereeCog(commands.Cog):
         )
 
         match_state.status = "finished"
-        match_manager.remove_match(match_state.match_id)
+        _remove_match(match_state)
 
         await interaction.response.send_message(
             f"🧑‍⚖️ **Referee Decision:** <@{winner.id}> is declared the winner!\n"
