@@ -1,4 +1,122 @@
-# Anime-Arena
-Discord-based anime character battle game — claim characters, fight turn-based battles, climb ranks.
+# ⚔️ Anime Arena
 
-Link to datasets : https://www.kaggle.com/datasets/andreuvallhernndez/myanimelist-jikan?select=characters.csv
+A Discord bot for 1v1 anime character battles — decided by real video clips, not stats or RNG.
+
+Claim any anime character, then fight other players using actual footage as your moves. Every clip carries a hidden tier. Your opponent never sees what you played until the damage lands.
+
+> 🚧 Currently in active beta.
+
+**🔗 Join the server:** https://discord.gg/H6t3M2AJu
+
+---
+
+## 🎮 What is this?
+
+Anime Arena is built on one idea: combat should be judged by real footage and logical consistency, not a stat sheet.
+
+- **Character claims** — reserve any anime character; ownership is exclusive per server
+- **Clip-based combat** — attacks and defenses are real video clips you upload, each with a hidden tier
+- **Tiered damage** — Normal / Medium / Absolute / Over-Absolute, 4 HP per player
+- **Hidden information** — your opponent only sees your clip and the resulting damage, never your tier
+- **Logical combat** — abilities must be properly set up to work; defenses have to make physical sense
+- **Human referees** — disputes get resolved by a real person, not an algorithm (for now)
+- **Roleplay rewards** — staying in character is planned to feed directly into the points/ranking system
+
+If you were ever part of the old-school Facebook anime battle groups, this is that same idea, rebuilt for Discord.
+
+---
+
+## 📋 Commands
+
+### Getting started
+| Command | Description |
+|---|---|
+| `/reserve` | Reserve a character — search by anime, then by character name |
+| `/my_character` | Check your currently reserved character |
+| `/players` | See all players and their reserved characters |
+| `/challenge @player` | Send a match request — 60s to accept/decline |
+
+### In a match
+| Command | Description |
+|---|---|
+| `/attack` | Declare an attack — pick a tier, upload a clip |
+| `/defend` | Declare a defense — pick a tier, upload a clip |
+| `/custom` | Submit a flavor/RP clip — no damage effect |
+| `/end_turn` | Lock in your actions and pass the turn |
+| `/surrender` | Forfeit the match |
+| `/object` | Pause the match and call a referee |
+
+### Referee-only
+| Command | Description |
+|---|---|
+| `/resolve` | Unpause a match after review |
+| `/set_hp @player` | Manually correct a player's HP (0–4) |
+| `/rollback` | Rewind the match to the previous turn |
+| `/force_end @winner` | End the match immediately, declare a winner |
+
+---
+
+## 🛠️ Tech Stack
+
+- **Python** + [discord.py](https://github.com/Rapptz/discord.py)
+- **PostgreSQL** (hosted on [Neon](https://neon.tech)) via [Tortoise ORM](https://tortoise.github.io/)
+- Character/anime data seeded from a local dataset, validated against real anime sources
+
+## 📁 Project Structure
+
+```
+anime_arena/
+├── app/            # Bot entrypoint and Discord-facing logic
+├── core/           # Shared config (env vars, settings)
+├── database/
+│   ├── models/     # Anime, Player, Character models
+│   └── database.py
+├── services/       # Business logic (claims, matchmaking, combat)
+├── scripts/        # One-off tools (data import, table creation)
+└── config.env      # Local environment config (not committed)
+```
+
+---
+
+## 🚀 Setup
+
+1. Clone the repo
+2. Create a virtual environment and install dependencies:
+   ```
+   pip install -r requirements.txt
+   ```
+3. Create `config.env` in the project root:
+   ```
+   DATABASE_URL=your_postgres_connection_string
+   DISCORD_BOT_TOKEN=your_bot_token
+   ```
+4. Run the table creation script:
+   ```
+   python -m scripts.db_tables_creation
+   ```
+5. Start the bot:
+   ```
+   python -m app.main
+   ```
+
+---
+
+## 🗺️ Roadmap
+
+- [x] Character claim system with fuzzy search
+- [x] Turn-based combat with tiered damage
+- [x] Referee dispute/objection flow
+- [ ] Points and ranking system
+- [ ] Roleplay scoring
+- [ ] Character challenge system (contest a claimed character)
+- [ ] AI referee, trained on logged human rulings
+
+---
+
+## 🤝 Contributing
+
+This project is in early beta — issues and PRs are welcome, but expect things to shift as the core systems (points, rankings, RP scoring) get built out.
+
+## 📜 License
+
+TBD
