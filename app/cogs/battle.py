@@ -288,27 +288,18 @@ class BattleCog(commands.Cog):
         acting_id = turn_summary["acting_player_id"]
         cached: list[dict] = match_state.video_cache.pop(acting_id, [])
 
-        actions = turn_summary["actions"]
-        action_line = (
-            " → ".join(
-                a["action_type"].upper() + (f" ({a['tier']})" if a.get("tier") else "")
-                for a in actions
-            )
-            if actions else "PASSED"
-        )
-
         # 1. Clips in submission order.
         total = len(cached)
         for i, clip in enumerate(cached, start=1):
             await interaction.channel.send(
-                content=f"📹 **Clip {i}/{total} — {clip['label']}** (<@{acting_id}>)",
+                content=f"📹 **Clip {i}/{total}** (<@{acting_id}>)",
                 file=discord.File(io.BytesIO(clip["bytes"]), filename=clip["filename"]),
             )
 
         # 2. Status embed last.
         embed = await generate_turn_embed(match_state, turn_summary)
         await interaction.channel.send(
-            content=f"⚔️ **<@{acting_id}>** ended their turn: **{action_line}**",
+            content=f"⚔️ **<@{acting_id}>** ended their turn.",
             embed=embed,
         )
 
@@ -321,15 +312,8 @@ class BattleCog(commands.Cog):
             )
         else:
             next_player_id = match_state.current_player_id
-            pending_notice = ""
-            if has_pending_attack(match_state):
-                atk = match_state.pending_attack
-                pending_notice = (
-                    f"\n⚠️ <@{next_player_id}> — you have an incoming **{atk['tier']}** attack! "
-                    f"Your **first action must be a defense** or you take full damage."
-                )
             next_msg = await interaction.channel.send(
-                f"▶️ **Turn {match_state.current_turn}** — <@{next_player_id}>'s move!{pending_notice}"
+                f"▶️ **Turn {match_state.current_turn}** — <@{next_player_id}>'s move!"
             )
             _auto_delete(next_msg, delay=60)
 

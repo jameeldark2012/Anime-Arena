@@ -194,7 +194,7 @@ async def record_action(
     # ── Download and cache the clip ───────────────────────────────────────────
     clip_bytes = await _download(attachment.url)
     if clip_bytes is not None:
-        label = action["action_type"].upper() + (f" ({action['tier']})" if action.get("tier") else "")
+        label = action["action_type"].upper()
         match_state.video_cache.setdefault(player_id, []).append({
             "bytes": clip_bytes,
             "label": label,
@@ -212,15 +212,15 @@ async def record_action(
         outcome = resolution["outcome"]
         dmg = resolution["damage"]
         if outcome == "blocked":
-            msg = f"🛡️ **Blocked** the incoming {resolution['attack_tier']} attack! " + msg
+            msg = f"🛡️ **Blocked** the incoming attack! " + msg
         elif outcome == "failed_defense":
             msg = (
-                f"💥 Defense failed — took **{dmg} damage** from the {resolution['attack_tier']} attack! "
+                f"💥 Defense failed — took **{dmg} damage**! "
                 + msg
             )
         else:
             msg = (
-                f"💥 No defense — took **{dmg} damage** from the {resolution['attack_tier']} attack! "
+                f"💥 No defense — took **{dmg} damage**! "
                 + msg
             )
 
@@ -346,68 +346,28 @@ async def generate_turn_embed(
         color=colour,
     )
 
-    # ── Actions taken ─────────────────────────────────────────────────────────
-    def fmt_action(a: dict) -> str:
-        tier = f" ({a['tier']})" if a.get("tier") else ""
-        icons = {"attack": "⚔️", "defense": "🛡️", "custom": "✨", "pass": "⏭️"}
-        icon = icons.get(a["action_type"], "•")
-        return f"{icon} {a['action_type'].capitalize()}{tier}"
-
-    if actions:
-        actions_text = " → ".join(fmt_action(a) for a in actions)
-    else:
-        actions_text = "*(passed — no actions)*"
-
-    embed.add_field(
-        name=f"<@{acting_id}>'s Turn",
-        value=actions_text,
-        inline=False,
-    )
+    # ── Actions taken — hidden from public embed to preserve game skill ──────
+    # (players see their own actions via ephemeral feedback during the turn)
 
     # ── Incoming attack resolution ────────────────────────────────────────────
     if resolution is not None:
-        att_id = resolution["attacker_id"]
-        def_id = resolution["defender_id"]
-        att_tier = resolution["attack_tier"]
-        outcome = resolution["outcome"]
         dmg = resolution["damage"]
+        def_id = resolution["defender_id"]
+        outcome = resolution["outcome"]
 
         if outcome == "blocked":
-            def_tier = resolution["defense_action"]["tier"]
-            res_text = (
-                f"<@{att_id}>'s **{att_tier}** attack → "
-                f"🛡️ **BLOCKED** by <@{def_id}>'s **{def_tier}** defense! *(0 damage)*"
-            )
-        elif outcome == "failed_defense":
-            def_tier = resolution["defense_action"]["tier"]
-            res_text = (
-                f"<@{att_id}>'s **{att_tier}** attack → "
-                f"❌ <@{def_id}>'s **{def_tier}** defense was too weak! "
-                f"💥 **{dmg} damage**"
-            )
-        else:  # no_defense or pass
-            res_text = (
-                f"<@{att_id}>'s **{att_tier}** attack → "
-                f"💥 **{dmg} damage** to <@{def_id}>! *(no defense)*"
-            )
+            res_text = f"🛡️ <@{def_id}> **blocked** the attack! *(0 damage)*"
+        else:
+            res_text = f"💥 <@{def_id}> took **{dmg} damage**!"
 
         embed.add_field(
-            name="⚡ Attack Resolution",
+            name="⚡ Resolution",
             value=res_text,
             inline=False,
         )
 
-    # ── Outgoing attack notice ────────────────────────────────────────────────
-    if attack_sent is not None and match_state.status != "finished":
-        opp_id = _opponent(match_state, acting_id)
-        embed.add_field(
-            name="🔮 Pending Attack",
-            value=(
-                f"⏳ <@{acting_id}> sent a **{attack_sent['tier']}** attack — "
-                f"<@{opp_id}> must defend with it as their **first action** next turn!"
-            ),
-            inline=False,
-        )
+    # ── Outgoing attack notice — hidden to preserve game skill ───────────────
+    # (the opponent finds out when damage hits, not before)
 
     # ── HP bars ───────────────────────────────────────────────────────────────
     def hp_bar(hp: int) -> str:
