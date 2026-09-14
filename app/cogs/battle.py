@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import io
 import asyncio
 import discord
 from discord import app_commands
@@ -15,104 +14,14 @@ from services.combat_service import (
     get_active_player,
     has_pending_attack,
 )
-from core.config import settings
-
-# Timeout (seconds) to wait for the user to upload their clip.
-CLIP_UPLOAD_TIMEOUT = 120
-# How long (seconds) temporary public messages linger before auto-deletion.
-TEMP_MSG_TTL = 30
-
-
-def _auto_delete(msg: discord.Message, delay: float = TEMP_MSG_TTL) -> None:
-    """Schedule a message for deletion after `delay` seconds. Fire-and-forget."""
-    async def _delete() -> None:
-        await asyncio.sleep(delay)
-        try:
-            await msg.delete()
-        except discord.HTTPException:
-            pass
-    asyncio.create_task(_delete())
-
-
-# ---------------------------------------------------------------------------
-# Tier selection view (shared by /attack and /defend)
-# ---------------------------------------------------------------------------
-
-class TierSelectView(discord.ui.View):
-    def __init__(self, action_type: str, bot: commands.Bot) -> None:
-        super().__init__(timeout=60)
-        self.action_type = action_type
-        self.bot = bot
-
-    async def _handle_tier(self, interaction: discord.Interaction, tier: str) -> None:
-        self.stop()
-
-        await interaction.response.edit_message(
-            content=(
-                f"📎 Tier **{tier}** locked in.\n"
-                f"Now send your clip (mp4/mov/webm/mkv) in this channel. "
-                f"You have {CLIP_UPLOAD_TIMEOUT}s."
-            ),
-            view=None,
-        )
-
-        def check(m: discord.Message) -> bool:
-            return (
-                m.author.id == interaction.user.id
-                and m.channel.id == interaction.channel_id
-                and len(m.attachments) > 0
-            )
-
-        try:
-            msg: discord.Message = await self.bot.wait_for(
-                "message", check=check, timeout=CLIP_UPLOAD_TIMEOUT
-            )
-        except asyncio.TimeoutError:
-            await interaction.edit_original_response(
-                content="⏰ Time's up — no clip received. Use the command again to retry."
-            )
-            return
-
-        attachment = msg.attachments[0]
-
-        match_state = match_manager.get_match(interaction.channel_id)
-        if not match_state:
-            await interaction.edit_original_response(content="This is not an active match channel.")
-            return
-
-        # Download and register the action BEFORE deleting the message.
-        # Discord CDN URLs become inaccessible once the source message is deleted.
-        success, reply, _resolution = await record_action(
-            match_state=match_state,
-            player_id=interaction.user.id,
-            action_type=self.action_type,
-            tier=tier,
-            attachment=attachment,
-        )
-
-        # Now safe to delete — bytes are already cached in match_state.
-        try:
-            await msg.delete()
-        except discord.HTTPException:
-            pass
-
-        await interaction.edit_original_response(content=reply if success else f"❌ {reply}")
-
-    @discord.ui.button(label="Normal", style=discord.ButtonStyle.secondary)
-    async def normal_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await self._handle_tier(interaction, "Normal")
-
-    @discord.ui.button(label="Medium", style=discord.ButtonStyle.primary)
-    async def medium_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await self._handle_tier(interaction, "Medium")
-
-    @discord.ui.button(label="Absolute", style=discord.ButtonStyle.danger)
-    async def absolute_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await self._handle_tier(interaction, "Absolute")
-
-    @discord.ui.button(label="Over-Absolute", style=discord.ButtonStyle.success)
-    async def over_absolute_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await self._handle_tier(interaction, "Over-Absolute")
+from app.cogs.utils import (
+    auto_delete,
+    ref_ping,
+    collect_clip,
+    post_turn_result,
+    TierSelectView,
+    CLIP_UPLOAD_TIMEOUT,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -188,18 +97,12 @@ class BattleCog(commands.Cog):
             )
             return
 
-        # If there's a pending incoming attack and this player hasn't acted yet,
-        # remind them they should defend first (but don't force it — the engine
-        # will resolve it correctly regardless).
-        if (
-            action_type != "defense"
-            and has_pending_attack(match_state)
-            and len(match_state.current_turn_actions) == 0
-        ):
-            # Let the command proceed but warn them — they may intentionally eat the damage.
-            pass  # warning is shown via the resolution message after they submit
-
-        view = TierSelectView(action_type, self.bot)
+        view = TierSelectView(
+            action_type=action_type,
+            bot=self.bot,
+            state_getter=match_manager.get_match,
+            not_found_msg="This is not an active match channel.",
+        )
         await interaction.response.send_message(
             f"Select your **{action_type}** tier:", view=view, ephemeral=True
         )
@@ -307,42 +210,22 @@ class BattleCog(commands.Cog):
             await interaction.followup.send(message, ephemeral=True)
             return
 
-        # ── Acknowledge the interaction silently, then post everything via
-        #    channel.send so all messages share the same pipeline and order
-        #    is guaranteed (clips first, status embed last).
         await interaction.followup.send("✅ Turn locked in.", ephemeral=True)
 
-        acting_id = turn_summary["acting_player_id"]
-        cached: list[dict] = match_state.video_cache.pop(acting_id, [])
-
-        # 1. Clips in submission order.
-        total = len(cached)
-        for i, clip in enumerate(cached, start=1):
-            await interaction.channel.send(
-                content=f"📹 **Clip {i}/{total}** (<@{acting_id}>)",
-                file=discord.File(io.BytesIO(clip["bytes"]), filename=clip["filename"]),
-            )
-
-        # 2. Status embed last.
-        embed = await generate_turn_embed(match_state, turn_summary)
-        await interaction.channel.send(
-            content=f"⚔️ **<@{acting_id}>** ended their turn.",
-            embed=embed,
-        )
+        await post_turn_result(interaction.channel, match_state, turn_summary, generate_turn_embed)
 
         # ── Match over ────────────────────────────────────────────────────────
         if turn_summary["winner_id"]:
             match_manager.remove_match(match_state.match_id)
-            ref_ping = f"<@&{settings.REFEREE_ROLE_ID}>" if settings.REFEREE_ROLE_ID else "@here"
             await interaction.channel.send(
-                f"🏆 {ref_ping} **MATCH OVER!** Winner: <@{turn_summary['winner_id']}>."
+                f"🏆 {ref_ping()} **MATCH OVER!** Winner: <@{turn_summary['winner_id']}>."
             )
         else:
             next_player_id = match_state.current_player_id
             next_msg = await interaction.channel.send(
                 f"▶️ **Turn {match_state.current_turn}** — <@{next_player_id}>'s move!"
             )
-            _auto_delete(next_msg, delay=60)
+            auto_delete(next_msg, delay=60)
 
     @app_commands.command(name="object", description="Raise an objection and ping a referee")
     async def object_match(self, interaction: discord.Interaction) -> None:
@@ -361,11 +244,10 @@ class BattleCog(commands.Cog):
 
         match_state.has_objection = True
         match_state.is_paused = True
-        ref_ping = f"<@&{settings.REFEREE_ROLE_ID}>" if settings.REFEREE_ROLE_ID else "@here"
         await interaction.response.send_message(
             f"🚨 **OBJECTION BY <@{interaction.user.id}>!** 🚨\n"
             f"⏸️ **Match is now PAUSED.** No actions can be submitted until a referee resolves this.\n"
-            f"{ref_ping} Please review this match immediately."
+            f"{ref_ping()} Please review this match immediately."
         )
 
     @app_commands.command(name="surrender", description="Forfeit the match and give your opponent the win")
@@ -387,11 +269,10 @@ class BattleCog(commands.Cog):
         match_state.status = "finished"
         match_manager.remove_match(match_state.match_id)
 
-        ref_ping = f"<@&{settings.REFEREE_ROLE_ID}>" if settings.REFEREE_ROLE_ID else "@here"
         await interaction.response.send_message(
             f"🏳️ <@{loser_id}> has **surrendered**!\n"
             f"🏆 <@{winner_id}> wins the match by forfeit!\n"
-            f"{ref_ping}"
+            f"{ref_ping()}"
         )
 
 

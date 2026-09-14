@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import io
 import asyncio
 import logging
 
@@ -16,102 +15,17 @@ from services.combat_service import (
     end_turn,
     generate_turn_embed,
     get_active_player,
-    has_pending_attack,
 )
-from core.config import settings
+from app.cogs.utils import (
+    auto_delete,
+    ref_ping,
+    collect_clip,
+    post_turn_result,
+    TierSelectView,
+    CLIP_UPLOAD_TIMEOUT,
+)
 
 logger = logging.getLogger(__name__)
-
-CLIP_UPLOAD_TIMEOUT = 120
-TEMP_MSG_TTL = 30
-
-
-def _auto_delete(msg: discord.Message, delay: float = TEMP_MSG_TTL) -> None:
-    async def _delete() -> None:
-        await asyncio.sleep(delay)
-        try:
-            await msg.delete()
-        except discord.HTTPException:
-            pass
-    asyncio.create_task(_delete())
-
-
-# ---------------------------------------------------------------------------
-# Tier selection view — identical pattern to battle.py but uses boss_manager
-# ---------------------------------------------------------------------------
-
-class BossTierSelectView(discord.ui.View):
-    def __init__(self, action_type: str, bot: commands.Bot) -> None:
-        super().__init__(timeout=60)
-        self.action_type = action_type
-        self.bot = bot
-
-    async def _handle_tier(self, interaction: discord.Interaction, tier: str) -> None:
-        self.stop()
-
-        await interaction.response.edit_message(
-            content=(
-                f"📎 Tier **{tier}** locked in.\n"
-                f"Now send your clip (mp4/mov/webm/mkv) in this channel. "
-                f"You have {CLIP_UPLOAD_TIMEOUT}s."
-            ),
-            view=None,
-        )
-
-        def check(m: discord.Message) -> bool:
-            return (
-                m.author.id == interaction.user.id
-                and m.channel.id == interaction.channel_id
-                and len(m.attachments) > 0
-            )
-
-        try:
-            msg: discord.Message = await self.bot.wait_for(
-                "message", check=check, timeout=CLIP_UPLOAD_TIMEOUT
-            )
-        except asyncio.TimeoutError:
-            await interaction.edit_original_response(
-                content="⏰ Time's up — no clip received. Use the command again to retry."
-            )
-            return
-
-        attachment = msg.attachments[0]
-
-        boss_state = boss_manager.get_fight(interaction.channel_id)
-        if not boss_state:
-            await interaction.edit_original_response(content="This is not an active boss fight channel.")
-            return
-
-        success, reply, _resolution = await record_action(
-            match_state=boss_state,
-            player_id=interaction.user.id,
-            action_type=self.action_type,
-            tier=tier,
-            attachment=attachment,
-        )
-
-        try:
-            await msg.delete()
-        except discord.HTTPException:
-            pass
-
-        await interaction.edit_original_response(content=reply if success else f"❌ {reply}")
-
-    @discord.ui.button(label="Normal", style=discord.ButtonStyle.secondary)
-    async def normal_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await self._handle_tier(interaction, "Normal")
-
-    @discord.ui.button(label="Medium", style=discord.ButtonStyle.primary)
-    async def medium_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await self._handle_tier(interaction, "Medium")
-
-    @discord.ui.button(label="Absolute", style=discord.ButtonStyle.danger)
-    async def absolute_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await self._handle_tier(interaction, "Absolute")
-
-    @discord.ui.button(label="Over-Absolute", style=discord.ButtonStyle.success)
-    async def over_absolute_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await self._handle_tier(interaction, "Over-Absolute")
 
 
 # ---------------------------------------------------------------------------
@@ -154,21 +68,15 @@ class BossBattleCog(commands.Cog):
         if turn_summary is None:
             return
 
-        # Post the status embed.
-        embed = await generate_turn_embed(boss_state, turn_summary)
-        await channel.send(
-            content=f"👹 **{boss_state.boss_config.display_name}** ended their turn.",
-            embed=embed,
-        )
+        await post_turn_result(channel, boss_state, turn_summary, generate_turn_embed)
 
-        # Check for match over.
         if turn_summary["winner_id"]:
             await _handle_match_over(boss_state, channel, turn_summary["winner_id"])
         else:
             next_msg = await channel.send(
                 f"▶️ **Turn {boss_state.current_turn}** — <@{boss_state.player1_id}>'s move!"
             )
-            _auto_delete(next_msg, delay=60)
+            auto_delete(next_msg, delay=60)
 
     # ── Commands ──────────────────────────────────────────────────────────────
 
@@ -203,7 +111,6 @@ class BossBattleCog(commands.Cog):
             f"You go first — good luck against **{boss_state.boss_config.display_name}**!",
         )
 
-    @app_commands.command(name="boss_attack", description="Declare an attack in your boss fight.")
     async def boss_attack(self, interaction: discord.Interaction) -> None:
         await self.submit_attack(interaction)
 
@@ -224,12 +131,16 @@ class BossBattleCog(commands.Cog):
             )
             return
 
-        view = BossTierSelectView("attack", self.bot)
+        view = TierSelectView(
+            action_type="attack",
+            bot=self.bot,
+            state_getter=boss_manager.get_fight,
+            not_found_msg="This is not an active boss fight channel.",
+        )
         await interaction.response.send_message(
             "Select your **attack** tier:", view=view, ephemeral=True
         )
 
-    @app_commands.command(name="boss_defend", description="Declare a defense in your boss fight.")
     async def boss_defend(self, interaction: discord.Interaction) -> None:
         await self.submit_defense(interaction)
 
@@ -244,15 +155,16 @@ class BossBattleCog(commands.Cog):
             await interaction.response.send_message(turn_err, ephemeral=True)
             return
 
-        view = BossTierSelectView("defense", self.bot)
+        view = TierSelectView(
+            action_type="defense",
+            bot=self.bot,
+            state_getter=boss_manager.get_fight,
+            not_found_msg="This is not an active boss fight channel.",
+        )
         await interaction.response.send_message(
             "Select your **defense** tier:", view=view, ephemeral=True
         )
 
-    @app_commands.command(
-        name="boss_custom",
-        description="Submit a custom/RP clip in your boss fight. No combat effect.",
-    )
     async def boss_custom(self, interaction: discord.Interaction) -> None:
         await self.submit_custom(interaction)
 
@@ -303,10 +215,6 @@ class BossBattleCog(commands.Cog):
 
         await interaction.edit_original_response(content=reply if success else f"❌ {reply}")
 
-    @app_commands.command(
-        name="boss_end_turn",
-        description="Lock in your actions and let the boss respond.",
-    )
     async def boss_end_turn(self, interaction: discord.Interaction) -> None:
         await self.finish_player_turn(interaction)
 
@@ -335,22 +243,7 @@ class BossBattleCog(commands.Cog):
 
         await interaction.followup.send("✅ Turn locked in.", ephemeral=True)
 
-        # Post the player's clips.
-        acting_id = turn_summary["acting_player_id"]
-        cached: list[dict] = boss_state.video_cache.pop(acting_id, [])
-        total = len(cached)
-        for i, clip in enumerate(cached, start=1):
-            await interaction.channel.send(
-                content=f"📹 **Clip {i}/{total}** (<@{acting_id}>)",
-                file=discord.File(io.BytesIO(clip["bytes"]), filename=clip["filename"]),
-            )
-
-        # Post the player's turn embed.
-        embed = await generate_turn_embed(boss_state, turn_summary)
-        await interaction.channel.send(
-            content=f"⚔️ **<@{acting_id}>** ended their turn.",
-            embed=embed,
-        )
+        await post_turn_result(interaction.channel, boss_state, turn_summary, generate_turn_embed)
 
         # ── Check if the boss is already dead (player's attack just killed it) ─
         if turn_summary["winner_id"]:
@@ -361,10 +254,6 @@ class BossBattleCog(commands.Cog):
         await interaction.channel.send("⚙️ **The boss is responding…**")
         await self._run_boss_turn_and_post(boss_state, interaction.channel)
 
-    @app_commands.command(
-        name="boss_surrender",
-        description="Forfeit your boss fight.",
-    )
     async def boss_surrender(self, interaction: discord.Interaction) -> None:
         await self.forfeit(interaction)
 
@@ -400,8 +289,8 @@ async def _handle_match_over(boss_state, channel: discord.abc.Messageable, winne
             f"Incredible!"
         )
 
-    ref_ping = f"<@&{settings.REFEREE_ROLE_ID}>" if settings.REFEREE_ROLE_ID else ""
-    await channel.send(f"🏁 **BOSS FIGHT OVER!**\n{result}\n{ref_ping}".strip())
+    ping = ref_ping()
+    await channel.send(f"🏁 **BOSS FIGHT OVER!**\n{result}\n{ping}".strip())
 
 
 async def setup(bot: commands.Bot) -> None:

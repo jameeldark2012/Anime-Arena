@@ -296,6 +296,19 @@ class RefereeCog(commands.Cog):
             f"▶️ <@{match_state.current_player_id}> — it's your turn!"
         )
 
+        # ── If this is a boss fight and the rollback landed on the boss's turn,
+        #    trigger the boss AI automatically — otherwise the fight freezes.
+        from boss.boss_state import BossState as _BossState
+        from boss.boss_config import BOSS_PLAYER_ID
+        if (
+            isinstance(match_state, _BossState)
+            and match_state.current_player_id == BOSS_PLAYER_ID
+        ):
+            boss_cog = interaction.client.get_cog("BossBattleCog")
+            if boss_cog:
+                await interaction.channel.send("⚙️ **The boss is responding…**")
+                await boss_cog._run_boss_turn_and_post(match_state, interaction.channel)
+
 
 async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(RefereeCog(bot))
