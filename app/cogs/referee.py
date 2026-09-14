@@ -58,7 +58,22 @@ def _remove_match(match_state: MatchState) -> None:
 
 
 def _hp_bar(hp: int, max_hp: int = 4) -> str:
-    return f"{'❤️' * hp}{'🖤' * (max_hp - hp)} ({hp}/{max_hp})"
+    filled = min(hp, max_hp)
+    return f"{'❤️' * filled}{'🖤' * (max_hp - filled)} ({hp}/{max_hp})"
+
+
+def _get_max_hp(match_state, player_id: int) -> int:
+    """Return the starting HP for a player, derived from snapshot 0."""
+    from boss.boss_state import BossState as _BossState
+    from boss.boss_config import BOSS_PLAYER_ID
+    if isinstance(match_state, _BossState) and player_id == BOSS_PLAYER_ID:
+        return match_state.boss_config.hp
+    if match_state.state_history:
+        snap = match_state.state_history[0]
+        if player_id == match_state.player1_id:
+            return snap["player1_hp"]
+        return snap["player2_hp"]
+    return 4
 
 
 # ---------------------------------------------------------------------------
@@ -116,8 +131,8 @@ class RefereeCog(commands.Cog):
         embed.add_field(
             name="HP",
             value=(
-                f"<@{match_state.player1_id}>: {_hp_bar(match_state.player1_hp)}\n"
-                f"<@{match_state.player2_id}>: {_hp_bar(match_state.player2_hp)}"
+                f"<@{match_state.player1_id}>: {_hp_bar(match_state.player1_hp, _get_max_hp(match_state, match_state.player1_id))}\n"
+                f"<@{match_state.player2_id}>: {_hp_bar(match_state.player2_hp, _get_max_hp(match_state, match_state.player2_id))}"
             ),
             inline=False,
         )

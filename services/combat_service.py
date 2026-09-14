@@ -370,14 +370,28 @@ async def generate_turn_embed(
     # (the opponent finds out when damage hits, not before)
 
     # ── HP bars ───────────────────────────────────────────────────────────────
-    def hp_bar(hp: int) -> str:
-        return f"`{'❤️' * hp}{'🖤' * (4 - hp)}`  ({hp}/4)"
+    p1_max_hp = max(match_state.player1_hp, 4)
+    p2_max_hp = max(match_state.player2_hp, 4)
+
+    # Use the starting HP from history snapshot 0 if available, as current HP
+    # may have dropped. Fall back to config hp for boss, 4 for players.
+    from boss.boss_state import BossState as _BossState
+    if isinstance(match_state, _BossState):
+        p2_max_hp = match_state.boss_config.hp
+    if match_state.state_history:
+        p1_max_hp = match_state.state_history[0]["player1_hp"]
+        if not isinstance(match_state, _BossState):
+            p2_max_hp = match_state.state_history[0]["player2_hp"]
+
+    def hp_bar(hp: int, max_hp: int) -> str:
+        filled = min(hp, max_hp)
+        return f"`{'❤️' * filled}{'🖤' * (max_hp - filled)}`  ({hp}/{max_hp})"
 
     embed.add_field(
         name="HP",
         value=(
-            f"<@{match_state.player1_id}> ({p1_name}): {hp_bar(turn_summary['p1_hp'])}\n"
-            f"<@{match_state.player2_id}> ({p2_name}): {hp_bar(turn_summary['p2_hp'])}"
+            f"<@{match_state.player1_id}> ({p1_name}): {hp_bar(turn_summary['p1_hp'], p1_max_hp)}\n"
+            f"<@{match_state.player2_id}> ({p2_name}): {hp_bar(turn_summary['p2_hp'], p2_max_hp)}"
         ),
         inline=False,
     )
