@@ -225,6 +225,35 @@ class RefereeCog(commands.Cog):
             f"<@{loser_id}> loses. Match is now closed."
         )
 
+    # ── /ref_boss_wins ────────────────────────────────────────────────────────
+
+    @app_commands.command(
+        name="ref_boss_wins",
+        description="[Referee] Declare the boss as winner and end the boss fight.",
+    )
+    @referee_only()
+    async def ref_boss_wins(self, interaction: discord.Interaction) -> None:
+        from boss.boss_state import BossState as _BossState
+
+        match_state, err = _get_match(interaction)
+        if err:
+            await interaction.response.send_message(err, ephemeral=True)
+            return
+
+        if not isinstance(match_state, _BossState):
+            await interaction.response.send_message(
+                "❌ This command can only be used in a boss fight channel.", ephemeral=True
+            )
+            return
+
+        match_state.status = "finished"
+        _remove_match(match_state)
+
+        await interaction.response.send_message(
+            f"🧑‍⚖️ **Referee Decision:** **{match_state.boss_config.display_name}** is declared the winner!\n"
+            f"<@{match_state.player1_id}> loses. Boss fight is now closed."
+        )
+
     # ── /ref_resume ───────────────────────────────────────────────────────────
 
     @app_commands.command(

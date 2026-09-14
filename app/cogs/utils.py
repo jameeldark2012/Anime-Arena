@@ -48,9 +48,12 @@ async def collect_clip(
     bot: commands.Bot,
     interaction: discord.Interaction,
     tier: str,
-) -> discord.Attachment | None:
-    """Edit the interaction to prompt for a clip, wait for it, delete the message,
-    and return the attachment. Returns None on timeout.
+) -> discord.Message | None:
+    """Edit the interaction to prompt for a clip, wait for the upload message,
+    and return it. Returns None on timeout.
+
+    The caller is responsible for calling record_action (which downloads the
+    clip bytes) BEFORE deleting the message — deleting first breaks the CDN URL.
 
     Parameters
     ----------
@@ -87,15 +90,7 @@ async def collect_clip(
         )
         return None
 
-    attachment = msg.attachments[0]
-
-    # Delete the user's upload message — bytes are downloaded by record_action later.
-    try:
-        await msg.delete()
-    except discord.HTTPException:
-        pass
-
-    return attachment
+    return msg
 
 
 # ---------------------------------------------------------------------------
@@ -175,8 +170,8 @@ class TierSelectView(discord.ui.View):
     async def _handle_tier(self, interaction: discord.Interaction, tier: str) -> None:
         self.stop()
 
-        attachment = await collect_clip(self.bot, interaction, tier)
-        if attachment is None:
+        msg = await collect_clip(self.bot, interaction, tier)
+        if msg is None:
             return  # timeout already reported to user inside collect_clip
 
         state = self.state_getter(interaction.channel_id)
@@ -184,6 +179,10 @@ class TierSelectView(discord.ui.View):
             await interaction.edit_original_response(content=self.not_found_msg)
             return
 
+        attachment = msg.attachments[0]
+
+        # Download and register the action BEFORE deleting the message.
+        # Discord CDN URLs become inaccessible once the source message is deleted.
         success, reply, _resolution = await record_action(
             match_state=state,
             player_id=interaction.user.id,
@@ -191,6 +190,12 @@ class TierSelectView(discord.ui.View):
             tier=tier,
             attachment=attachment,
         )
+
+        # Now safe to delete — bytes are already cached in match_state.
+        try:
+            await msg.delete()
+        except discord.HTTPException:
+            pass
 
         await interaction.edit_original_response(content=reply if success else f"❌ {reply}")
 

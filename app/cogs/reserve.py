@@ -64,6 +64,23 @@ class ReserveCog(commands.Cog):
     ) -> None:
         await interaction.response.defer()
 
+        # Block reservations while the player is in an active match or boss fight.
+        from services.match_manager_service import match_manager
+        from boss.boss_manager import boss_manager
+
+        in_pvp = any(
+            interaction.user.id in (m.player1_id, m.player2_id)
+            for m in match_manager._active_matches.values()
+        )
+        in_boss = boss_manager.get_fight_for_player(interaction.user.id) is not None
+
+        if in_pvp or in_boss:
+            await interaction.followup.send(
+                "❌ You cannot change your character while you are in an active match. "
+                "Finish or forfeit your current match first."
+            )
+            return
+
         try:
             _success, message = await reserve_character(
                 user_id=interaction.user.id,
