@@ -135,12 +135,17 @@ async def run_boss_turn(
     total = len(cached)
     for i, clip in enumerate(cached, start=1):
         await channel.send(
-            content=f"👊 **{config.display_name}** attacks! *(Clip {i}/{total})*",
+            content=f"📹 **{config.display_name}** *(Clip {i}/{total})*",
             file=discord.File(io.BytesIO(clip["bytes"]), filename=clip["filename"]),
         )
 
     if not cached:
-        # No clips available — still narrate the attack.
+        # No clips available — fall back to a text description.
+        logger.warning(
+            "Boss '%s' attacked with tier '%s' but had no clip to send.",
+            config.slug,
+            tier,
+        )
         await channel.send(
             content=f"👊 **{config.display_name}** launches a **{tier}** attack!"
         )

@@ -48,6 +48,7 @@ async def collect_clip(
     bot: commands.Bot,
     interaction: discord.Interaction,
     tier: str,
+    prompt_override: str | None = None,
 ) -> discord.Message | None:
     """Edit the interaction to prompt for a clip, wait for the upload message,
     and return it. Returns None on timeout.
@@ -63,15 +64,21 @@ async def collect_clip(
         The original interaction to edit with prompts.
     tier:
         The tier string already chosen by the player (used in the prompt).
+    prompt_override:
+        If provided, use this text instead of the default prompt. Useful when
+        re-prompting after a failed upload so the message isn't replaced.
     """
-    await interaction.response.edit_message(
-        content=(
-            f"📎 Tier **{tier}** locked in.\n"
-            f"Now send your clip (mp4/mov/webm/mkv) in this channel. "
-            f"You have {CLIP_UPLOAD_TIMEOUT}s."
-        ),
-        view=None,
+    prompt = prompt_override or (
+        f"📎 Tier **{tier}** locked in.\n"
+        f"Now send your clip (mp4/mov/webm/mkv) in this channel. "
+        f"You have {CLIP_UPLOAD_TIMEOUT}s."
     )
+
+    # Use edit_message for the initial response; edit_original_response for retries.
+    if not interaction.response.is_done():
+        await interaction.response.edit_message(content=prompt, view=None)
+    else:
+        await interaction.edit_original_response(content=prompt)
 
     def check(m: discord.Message) -> bool:
         return (
@@ -170,34 +177,48 @@ class TierSelectView(discord.ui.View):
     async def _handle_tier(self, interaction: discord.Interaction, tier: str) -> None:
         self.stop()
 
-        msg = await collect_clip(self.bot, interaction, tier)
-        if msg is None:
-            return  # timeout already reported to user inside collect_clip
-
         state = self.state_getter(interaction.channel_id)
         if not state:
-            await interaction.edit_original_response(content=self.not_found_msg)
+            await interaction.response.edit_message(content=self.not_found_msg, view=None)
             return
 
-        attachment = msg.attachments[0]
+        # Loop so a bad codec prompts the user to re-upload without restarting.
+        # On first iteration collect_clip uses response.edit_message; on retries
+        # it falls through to edit_original_response since response.is_done().
+        prompt: str | None = None
+        while True:
+            msg = await collect_clip(self.bot, interaction, tier, prompt_override=prompt)
+            if msg is None:
+                return  # timeout already reported to user inside collect_clip
 
-        # Download and register the action BEFORE deleting the message.
-        # Discord CDN URLs become inaccessible once the source message is deleted.
-        success, reply, _resolution = await record_action(
-            match_state=state,
-            player_id=interaction.user.id,
-            action_type=self.action_type,
-            tier=tier,
-            attachment=attachment,
-        )
+            attachment = msg.attachments[0]
 
-        # Now safe to delete — bytes are already cached in match_state.
-        try:
-            await msg.delete()
-        except discord.HTTPException:
-            pass
+            # Download and register the action BEFORE deleting the message.
+            # Discord CDN URLs become inaccessible once the source message is deleted.
+            success, reply, _resolution = await record_action(
+                match_state=state,
+                player_id=interaction.user.id,
+                action_type=self.action_type,
+                tier=tier,
+                attachment=attachment,
+            )
 
-        await interaction.edit_original_response(content=reply if success else f"❌ {reply}")
+            # Always delete the user's upload message regardless of outcome.
+            try:
+                await msg.delete()
+            except discord.HTTPException:
+                pass
+
+            if success:
+                await interaction.edit_original_response(content=reply)
+                return
+
+            # Action was rejected — set error as the next prompt and loop.
+            prompt = (
+                f"{reply}\n\n"
+                f"⬆️ Send your corrected clip in this channel to try again "
+                f"(tier **{tier}** is still locked in). You have {CLIP_UPLOAD_TIMEOUT}s."
+            )
 
     @discord.ui.button(label="Normal", style=discord.ButtonStyle.secondary)
     async def normal_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:

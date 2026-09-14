@@ -132,6 +132,35 @@ async def _download(url: str) -> bytes | None:
     return None
 
 
+def _probe_video_codec(data: bytes) -> str | None:
+    """Probe video codec from raw bytes via a temp file. Returns codec name or None."""
+    import subprocess, json as _json, tempfile, os
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
+            tmp.write(data)
+            tmp_path = tmp.name
+        try:
+            result = subprocess.run(
+                [
+                    "ffprobe", "-v", "quiet",
+                    "-print_format", "json",
+                    "-show_streams",
+                    tmp_path,
+                ],
+                capture_output=True,
+                timeout=10,
+            )
+            streams = _json.loads(result.stdout).get("streams", [])
+            for s in streams:
+                if s.get("codec_type") == "video":
+                    return s.get("codec_name")
+        finally:
+            os.unlink(tmp_path)
+    except Exception:
+        logger.exception("ffprobe check failed.")
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Public API — called by the battle cog
 # ---------------------------------------------------------------------------
@@ -166,13 +195,31 @@ async def record_action(
         return False, "⏸️ This match has been paused by a referee. Wait for them to resolve the objection.", None
 
     if not attachment.filename.lower().endswith(('.mp4', '.mov', '.webm', '.mkv')):
-        return False, "Please upload a valid video file (.mp4, .mov, .webm, .mkv).", None
+        return False, (
+            "❌ Unsupported file type.\n"
+            "Please upload an **MP4 encoded in H.264** — this is the only format guaranteed to play on all devices and Discord mobile.\n"
+            "If your clip doesn't play for others, re-export it as **H.264 MP4** using HandBrake (free) or your video editor."
+        ), None
 
     # ── Guard: at most one attack per turn ───────────────────────────────────
     if action_type == "attack" and any(
         a["action_type"] == "attack" for a in match_state.current_turn_actions
     ):
         return False, "You can only attack once per turn. You can still add defense or custom actions.", None
+
+    # ── Download and probe codec BEFORE registering anything ─────────────────
+    clip_bytes = await _download(attachment.url)
+    if clip_bytes is not None:
+        # Run ffprobe in a thread so we don't block the event loop.
+        loop = asyncio.get_running_loop()
+        codec = await loop.run_in_executor(None, _probe_video_codec, clip_bytes)
+
+        if codec is not None and codec != "h264":
+            return False, (
+                f"❌ Your clip is encoded as **{codec.upper()}** which doesn't play on all devices.\n"
+                f"Please re-export it as **H.264 MP4** and resubmit.\n"
+                f"HandBrake (free) can convert it: https://handbrake.fr"
+            ), None
 
     # ── Build the action entry ────────────────────────────────────────────────
     action = {
@@ -191,8 +238,7 @@ async def record_action(
     # ── Append action to the turn ─────────────────────────────────────────────
     match_state.current_turn_actions.append(action)
 
-    # ── Download and cache the clip ───────────────────────────────────────────
-    clip_bytes = await _download(attachment.url)
+    # ── Cache the clip bytes ──────────────────────────────────────────────────
     if clip_bytes is not None:
         label = action["action_type"].upper()
         match_state.video_cache.setdefault(player_id, []).append({

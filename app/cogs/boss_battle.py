@@ -179,11 +179,6 @@ class BossBattleCog(commands.Cog):
             await interaction.response.send_message(turn_err, ephemeral=True)
             return
 
-        await interaction.response.send_message(
-            f"📎 Send your custom action clip (mp4/mov/webm/mkv). You have {CLIP_UPLOAD_TIMEOUT}s.",
-            ephemeral=True,
-        )
-
         def check(m: discord.Message) -> bool:
             return (
                 m.author.id == interaction.user.id
@@ -191,29 +186,46 @@ class BossBattleCog(commands.Cog):
                 and len(m.attachments) > 0
             )
 
-        try:
-            msg: discord.Message = await self.bot.wait_for(
-                "message", check=check, timeout=CLIP_UPLOAD_TIMEOUT
-            )
-        except asyncio.TimeoutError:
-            await interaction.edit_original_response(content="⏰ Time's up — no clip received.")
-            return
-
-        attachment = msg.attachments[0]
-        success, reply, _ = await record_action(
-            match_state=boss_state,
-            player_id=interaction.user.id,
-            action_type="custom",
-            tier=None,
-            attachment=attachment,
+        await interaction.response.send_message(
+            f"📎 Send your custom action clip (mp4/mov/webm/mkv). You have {CLIP_UPLOAD_TIMEOUT}s.",
+            ephemeral=True,
         )
 
-        try:
-            await msg.delete()
-        except discord.HTTPException:
-            pass
+        # Loop so a bad codec prompts the user to re-upload without restarting.
+        while True:
+            try:
+                msg: discord.Message = await self.bot.wait_for(
+                    "message", check=check, timeout=CLIP_UPLOAD_TIMEOUT
+                )
+            except asyncio.TimeoutError:
+                await interaction.edit_original_response(content="⏰ Time's up — no clip received.")
+                return
 
-        await interaction.edit_original_response(content=reply if success else f"❌ {reply}")
+            attachment = msg.attachments[0]
+            success, reply, _ = await record_action(
+                match_state=boss_state,
+                player_id=interaction.user.id,
+                action_type="custom",
+                tier=None,
+                attachment=attachment,
+            )
+
+            try:
+                await msg.delete()
+            except discord.HTTPException:
+                pass
+
+            if success:
+                await interaction.edit_original_response(content=reply)
+                return
+
+            # Rejected — prompt to re-upload.
+            await interaction.edit_original_response(
+                content=(
+                    f"{reply}\n\n"
+                    f"⬆️ Send your corrected clip to try again. You have {CLIP_UPLOAD_TIMEOUT}s."
+                )
+            )
 
     async def boss_end_turn(self, interaction: discord.Interaction) -> None:
         await self.finish_player_turn(interaction)
