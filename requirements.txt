@@ -27,6 +27,7 @@ discord.py==2.7.1
 executing==2.2.1
 fastjsonschema==2.22.2
 fqdn==1.5.1
+ffmpeg-python==0.2.0
 frozenlist==1.8.0
 greenlet==3.5.5
 h11==0.16.0
