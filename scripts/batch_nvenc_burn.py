@@ -2,13 +2,17 @@
 batch_nvenc_burn.py
 -------------------
 Recursively processes all video files in a folder (and its subfolders):
-  1. Extracts the embedded ASS subtitle track from the video.
-  2. Burns those subtitles into the output using NVIDIA hardware encoding.
+  1. Probes the file with ffprobe to find the best English subtitle track.
+  2. Extracts that subtitle track as a temp .ass file.
+  3. Burns those subtitles into an .mp4 output using NVIDIA NVENC.
 
-Replicates exactly (in two steps):
-    ffmpeg -i input.mkv -map 0:s:0 subs.ass
-    ffmpeg -i input.mkv -vf "ass=subs.ass,format=yuv420p" -c:v h264_nvenc
-           -preset fast -c:a aac -b:a 192k output.mp4
+The original file is left completely untouched.
+
+Selection priority for subtitle track:
+  - Must be ASS/SSA format
+  - Prefers tracks whose language tag or title contains "eng" / "english"
+  - Skips tracks whose title contains "sign" (Signs-Songs tracks)
+  - Falls back to the first ASS track found if nothing better matches
 
 Usage:
     python -m scripts.batch_nvenc_burn <folder>
@@ -16,24 +20,16 @@ Usage:
     # Dry run — show what would be processed, touch nothing:
     python -m scripts.batch_nvenc_burn <folder> --dry-run
 
-    # Delete originals after successful conversion (default: keep as .bak):
-    python -m scripts.batch_nvenc_burn <folder> --delete-originals
-
 Requirements:
-    ffmpeg must be installed and on PATH, built with NVENC support.
+    ffmpeg + ffprobe must be installed and on PATH (with NVENC support).
     Windows:  winget install ffmpeg   OR   https://www.gyan.dev/ffmpeg/builds/
     tqdm:     pip install tqdm
-
-Notes:
-    - The extracted subs.ass is a temporary file and is deleted after conversion.
-    - If a video has no subtitle track, it is skipped with a warning.
-    - Output is written to a temp file first, then swapped in on success.
-    - Originals are renamed to .bak unless --delete-originals is passed.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import shutil
 import subprocess
@@ -64,32 +60,97 @@ def _collect_videos(root: Path) -> list[Path]:
     )
 
 
-def _extract_subs(src: Path, subs_out: Path) -> bool:
+def _find_sub_stream(src: Path) -> int | None:
     """
-    Extract the second ASS subtitle track (0:s:1 = Full subs, not Signs-Songs)
-    from src into subs_out.
-    Returns True on success, False if no subtitle track exists or extraction fails.
+    Probe src with ffprobe and return the absolute stream index of the best
+    English ASS subtitle track.
+
+    Selection logic:
+      1. Must be codec ass or ssa.
+      2. Skip if title contains "sign" (case-insensitive).
+      3. Prefer if language tag contains "eng" OR title contains "eng"/"english".
+      4. Fall back to first ASS stream if nothing preferred is found.
+
+    Returns the absolute stream index (e.g. 4), or None if no ASS track exists.
+    """
+    cmd = [
+        "ffprobe",
+        "-v", "quiet",
+        "-print_format", "json",
+        "-show_streams",
+        str(src),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, errors="replace")
+    if result.returncode != 0:
+        logger.error("ffprobe failed for %s", src.name)
+        return None
+
+    try:
+        streams = json.loads(result.stdout).get("streams", [])
+    except json.JSONDecodeError:
+        logger.error("ffprobe returned invalid JSON for %s", src.name)
+        return None
+
+    first_ass = None
+    best_match = None
+
+    for stream in streams:
+        codec = stream.get("codec_name", "").lower()
+        if codec not in ("ass", "ssa"):
+            continue
+
+        index = stream.get("index")
+        tags = stream.get("tags", {})
+        lang = tags.get("language", "").lower()
+        title = tags.get("title", "").lower()
+
+        # Skip Signs-Songs tracks
+        if "sign" in title:
+            continue
+
+        # Track the first ASS stream as fallback
+        if first_ass is None:
+            first_ass = index
+
+        # Prefer English tracks
+        if "eng" in lang or "eng" in title or "english" in title:
+            best_match = index
+            break  # take the first English full-subs track we find
+
+    chosen = best_match if best_match is not None else first_ass
+
+    if chosen is None:
+        logger.warning("SKIP   no ASS subtitle track found in: %s", src.name)
+    else:
+        # Log which track was chosen for visibility
+        stream_info = next((s for s in streams if s.get("index") == chosen), {})
+        tags = stream_info.get("tags", {})
+        title = tags.get("title", "unknown")
+        lang = tags.get("language", "?")
+        logger.info(
+            "SUB    stream #%d  lang=%s  title=%s  ← chosen",
+            chosen, lang, title,
+        )
+
+    return chosen
+
+
+def _extract_subs(src: Path, stream_index: int, subs_out: Path) -> bool:
+    """
+    Extract the subtitle stream at absolute index stream_index into subs_out.
+    Returns True on success, False on failure.
     """
     cmd = [
         "ffmpeg",
         "-y",
         "-i", str(src),
-        "-map", "0:s:1",   # second subtitle track = Full subs (skip Signs-Songs)
+        "-map", f"0:{stream_index}",
         str(subs_out),
     ]
     result = subprocess.run(cmd, capture_output=True, text=True, errors="replace")
 
     if result.returncode != 0:
-        # Fall back to first subtitle track if second doesn't exist
-        logger.warning("No second subtitle track, falling back to 0:s:0 for: %s", src.name)
-        cmd[cmd.index("0:s:1")] = "0:s:0"
-        result = subprocess.run(cmd, capture_output=True, text=True, errors="replace")
-
-    if result.returncode != 0:
-        if "matches no streams" in result.stderr or "subtitle" in result.stderr.lower():
-            logger.warning("SKIP   no subtitle track found in: %s", src.name)
-        else:
-            logger.error("FAIL (extract)  %s\nSTDERR:\n%s", src.name, result.stderr[-3000:])
+        logger.error("FAIL (extract)  %s\nSTDERR:\n%s", src.name, result.stderr[-3000:])
         return False
 
     return True
@@ -101,17 +162,17 @@ def _burn(src: Path, subs_file: Path) -> bool:
     The original file is left completely untouched.
     Returns True on success, False on failure.
     """
-    cwd = src.parent
-
-    # Write directly to the final .mp4 name — original .mkv is left untouched
     out_path = src.with_suffix(".mp4")
+    # Run with cwd = folder so we pass only the bare filename to ass=
+    # avoiding all Windows path/special-char escaping issues in filtergraphs.
+    cwd = src.parent
 
     cmd = [
         "ffmpeg",
         "-y",
         "-i", str(src),
-        "-map", "0:v:0",
-        "-map", "0:a:0",
+        "-map", "0:v:0",        # first video track
+        "-map", "0:a:0",        # first audio track (Japanese)
         "-vf", f"ass={subs_file.name},format=yuv420p",
         "-c:v", "h264_nvenc",
         "-preset", "p1",
@@ -130,32 +191,36 @@ def _burn(src: Path, subs_file: Path) -> bool:
     logger.info("OK     %s  →  %s", src.name, out_path.name)
     return True
 
-    return True
-
 
 def _process(src: Path, dry_run: bool) -> bool:
     """
-    Full pipeline for one video: extract subs → burn → clean up temp subs.
+    Full pipeline for one video: probe → extract subs → burn → clean up.
     Returns True on success/skip, False on failure.
     """
     if dry_run:
-        logger.info("DRY    would process: %s", src)
+        stream_index = _find_sub_stream(src)
+        if stream_index is not None:
+            logger.info("DRY    would process: %s", src.name)
         return True
 
-    # Use a fixed safe filename with no spaces/brackets — the ass= filtergraph
-    # cannot handle spaces or special characters in the path.
+    # Step 1: find the right subtitle stream
+    stream_index = _find_sub_stream(src)
+    if stream_index is None:
+        return False
+
+    # Safe temp filename — no spaces/brackets so the ass= filter doesn't choke
     subs_tmp = src.parent / "subs_temp_extracted.ass"
 
-    # Step 1: extract subtitles
+    # Step 2: extract it
     logger.info("EXTRACT  %s", src.name)
-    if not _extract_subs(src, subs_tmp):
-        return False  # already logged
+    if not _extract_subs(src, stream_index, subs_tmp):
+        return False
 
-    # Step 2: burn subtitles
+    # Step 3: burn it
     logger.info("BURN     %s", src.name)
     success = _burn(src, subs_tmp)
 
-    # Always clean up the temp .ass file
+    # Always clean up the temp .ass regardless of outcome
     if subs_tmp.exists():
         subs_tmp.unlink()
 
@@ -169,7 +234,7 @@ def main() -> None:
     parser.add_argument("folder", type=Path, help="Root folder to scan recursively.")
     parser.add_argument(
         "--dry-run", action="store_true",
-        help="Show what would be processed without doing anything.",
+        help="Show what subtitle track would be picked per file, without converting.",
     )
     args = parser.parse_args()
 
@@ -178,12 +243,14 @@ def main() -> None:
         logger.error("Not a directory: %s", root)
         sys.exit(1)
 
-    if shutil.which("ffmpeg") is None:
-        logger.error(
-            "ffmpeg not found on PATH.\n"
-            "  winget install ffmpeg   OR   https://www.gyan.dev/ffmpeg/builds/"
-        )
-        sys.exit(1)
+    for tool in ("ffmpeg", "ffprobe"):
+        if shutil.which(tool) is None:
+            logger.error(
+                "%s not found on PATH.\n"
+                "  winget install ffmpeg   OR   https://www.gyan.dev/ffmpeg/builds/",
+                tool,
+            )
+            sys.exit(1)
 
     videos = _collect_videos(root)
     if not videos:
