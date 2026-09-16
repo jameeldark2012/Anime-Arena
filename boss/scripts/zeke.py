@@ -49,7 +49,7 @@ _SCRIPT: list[TurnPlan] = [
         pre=None,
         tier="Normal",
         attack="Normal attack 3 human form calles on titans on u.mp4",
-        post="Hands in air after rocks, gameuu setuu, im good at.mp4",
+        post=None,
     ),
     TurnPlan(
         pre=None,
@@ -61,7 +61,7 @@ _SCRIPT: list[TurnPlan] = [
         pre=None,
         tier="Normal",
         attack="Normal attack 5 throws flesh behind him.mp4",
-        post=None,
+        post="Hands in air after rocks, gameuu setuu, im good at.mp4",
     ),
     TurnPlan(
         pre=None,
