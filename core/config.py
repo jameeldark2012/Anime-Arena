@@ -26,6 +26,7 @@ class Settings:
         self.MATCHES_FORUM_CHANNEL_ID = self._int("MATCHES_FORUM_CHANNEL_ID", 0)
         self.REFEREE_ROLE_ID = self._int("REFEREE_ROLE_ID", 0)
         self.GUILD_ID = self._int("GUILD_ID", 0)
+        self.DEBUG = self._bool("DEBUG", False)
 
     @staticmethod
     def _required(name: str) -> str:
@@ -40,6 +41,13 @@ class Settings:
         if not value:
             return default
         return int(value)
+
+    @staticmethod
+    def _bool(name: str, default: bool) -> bool:
+        value = os.getenv(name, "").strip().lower()
+        if not value:
+            return default
+        return value in ("1", "true", "yes")
 
 
 settings = Settings()

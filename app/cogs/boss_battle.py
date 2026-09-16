@@ -134,7 +134,7 @@ class BossBattleCog(commands.Cog):
         view = TierSelectView(
             action_type="attack",
             bot=self.bot,
-            state_getter=boss_manager.get_fight,
+            state_getter=lambda interaction: boss_manager.get_fight(interaction.channel_id),
             not_found_msg="This is not an active boss fight channel.",
         )
         await interaction.response.send_message(
@@ -158,7 +158,7 @@ class BossBattleCog(commands.Cog):
         view = TierSelectView(
             action_type="defense",
             bot=self.bot,
-            state_getter=boss_manager.get_fight,
+            state_getter=lambda interaction: boss_manager.get_fight(interaction.channel_id),
             not_found_msg="This is not an active boss fight channel.",
         )
         await interaction.response.send_message(

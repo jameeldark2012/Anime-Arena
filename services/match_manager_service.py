@@ -184,10 +184,49 @@ class MatchManagerService:
 
         self._active_matches[match_state.match_id] = match_state
         self._active_pairs.add(pair)
+        if settings.DEBUG:
+            print(
+                f"[DEBUG create_match_post] stored match_id={match_state.match_id}  "
+                f"parent_id={forum_thread.thread.parent_id}  "
+                f"player1={player1_id}  player2={player2_id}"
+            )
         return match_state, None
 
-    def get_match(self, match_id: int) -> MatchState | None:
-        return self._active_matches.get(match_id)
+    def get_match(self, channel_id: int) -> MatchState | None:
+        return self._active_matches.get(channel_id)
+
+    def get_match_for_interaction(self, interaction: discord.Interaction) -> MatchState | None:
+        """Look up a match by interaction, handling the Discord forum thread bug.
+
+        Discord has a client-side bug where slash commands inside forum threads
+        sometimes report the parent forum channel ID instead of the thread ID.
+        This method checks both the reported channel_id and, if that fails,
+        tries the actual thread ID by inspecting the channel object.
+        """
+        # Primary lookup — works when Discord reports correctly.
+        match = self._active_matches.get(interaction.channel_id)
+        if match:
+            return match
+
+        # Fallback: if the channel object is a Thread, try its ID directly.
+        # This covers the case where Discord sent parent_id instead of thread.id.
+        channel = interaction.channel
+        if isinstance(channel, discord.Thread) and channel.id != interaction.channel_id:
+            match = self._active_matches.get(channel.id)
+            if match:
+                return match
+
+        # Second fallback: if we got the parent forum channel ID, search all
+        # active matches for one whose thread lives under this parent.
+        # Needed when interaction.channel is the ForumChannel, not the thread.
+        if isinstance(channel, discord.ForumChannel):
+            for m in self._active_matches.values():
+                # The match_id IS the thread ID — check if it's a child of this forum.
+                thread = channel.get_thread(m.match_id)
+                if thread is not None:
+                    return m
+
+        return None
 
     def remove_match(self, match_id: int) -> MatchState | None:
         match_state = self._active_matches.pop(match_id, None)

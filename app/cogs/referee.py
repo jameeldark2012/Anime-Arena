@@ -39,7 +39,7 @@ def referee_only() -> app_commands.check:
 
 def _get_match(interaction: discord.Interaction) -> tuple[MatchState | None, str | None]:
     """Resolve match from the current channel. Checks PvP matches first, then boss fights."""
-    match_state = match_manager.get_match(interaction.channel_id)
+    match_state = match_manager.get_match_for_interaction(interaction)
     if match_state:
         return match_state, None
     boss_state = boss_manager.get_fight(interaction.channel_id)

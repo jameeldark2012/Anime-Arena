@@ -154,7 +154,7 @@ class TierSelectView(discord.ui.View):
     bot:
         The bot instance, used for wait_for inside collect_clip.
     state_getter:
-        A callable that takes a channel_id (int) and returns the active
+        A callable that takes an Interaction and returns the active
         match/boss state, or None. Used to look up the right state after
         the clip arrives.
     not_found_msg:
@@ -177,8 +177,17 @@ class TierSelectView(discord.ui.View):
     async def _handle_tier(self, interaction: discord.Interaction, tier: str) -> None:
         self.stop()
 
-        state = self.state_getter(interaction.channel_id)
+        if settings.DEBUG:
+            print(
+                f"[DEBUG TierSelectView] channel_id={interaction.channel_id}  "
+                f"user={interaction.user.id}  action={self.action_type}  tier={tier}"
+            )
+
+        from services.match_manager_service import match_manager as _mm
+        state = self.state_getter(interaction)
         if not state:
+            if settings.DEBUG:
+                print(f"[DEBUG TierSelectView] No match found! active_matches={list(_mm._active_matches.keys())}")
             await interaction.response.edit_message(content=self.not_found_msg, view=None)
             return
 
