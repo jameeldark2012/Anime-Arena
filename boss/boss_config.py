@@ -80,7 +80,7 @@ class BossConfig:
 
         Returns an empty list if the folder doesn't exist or has no video files.
         """
-        folder = self.clips_dir / TIER_FOLDER.get(tier, tier.lower())
+        folder = self.clips_dir / "attacks" / TIER_FOLDER.get(tier, tier.lower())
         if not folder.exists():
             return []
         return [

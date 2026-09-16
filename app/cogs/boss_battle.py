@@ -63,12 +63,10 @@ class BossBattleCog(commands.Cog):
         boss_state,
         channel: discord.abc.Messageable,
     ) -> None:
-        """Run the boss AI turn and post the result embed. Handles match-over."""
+        """Run the boss AI turn. Clips and embed are posted inside run_boss_turn."""
         turn_summary = await run_boss_turn(boss_state, channel)
         if turn_summary is None:
             return
-
-        await post_turn_result(channel, boss_state, turn_summary, generate_turn_embed)
 
         if turn_summary["winner_id"]:
             await _handle_match_over(boss_state, channel, turn_summary["winner_id"])

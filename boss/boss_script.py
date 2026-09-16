@@ -55,7 +55,37 @@ class BossScript:
         return None
 
     # ------------------------------------------------------------------
-    # Turn hooks
+    # Scripted turn plan (preferred over independent hooks)
+    # ------------------------------------------------------------------
+
+    def plan_turn(self, state: BossState) -> tuple[Path | None, str, Path | None, Path | None]:
+        """Return a complete turn plan as (pre_clip, tier, attack_clip, post_clip).
+
+        - pre_clip:    RP/flavour clip to post BEFORE the attack. None = skip.
+        - tier:        Attack tier string ("Normal", "Medium", "Absolute", …).
+        - attack_clip: Specific attack clip Path. None = pick randomly from tier folder.
+        - post_clip:   RP/flavour clip to post AFTER the embed. None = skip.
+
+        Override this in a subclass to give a boss a fully scripted, deterministic
+        turn sequence. When overridden, boss_ai.py will use this instead of the
+        individual hooks (pick_tier, on_turn_start, on_turn_end, etc.).
+
+        Default: returns (None, pick_tier(state), None, None) — falls back to the
+        existing probabilistic hook system so base-class bosses still work.
+        """
+        return None, self.pick_tier(state), None, None
+
+    def uses_plan_turn(self) -> bool:
+        """Return True if this script overrides plan_turn.
+
+        boss_ai.py checks this to decide whether to use the scripted path
+        or the original independent-hook path.
+        Default: False (base class does not override plan_turn).
+        """
+        return type(self).plan_turn is not BossScript.plan_turn
+
+    # ------------------------------------------------------------------
+    # Turn hooks (used when plan_turn is NOT overridden)
     # ------------------------------------------------------------------
 
     def on_turn_start(self, state: BossState) -> Path | None:
@@ -146,5 +176,38 @@ class BossScript:
         """Called when the human player takes damage from the boss.
 
         Return a Path to a taunting/RP clip, or None to skip.
+        """
+        return None
+
+    def try_respawn(self, state: BossState) -> Path | None:
+        """Called when the boss's HP reaches 0, before the match-over is declared.
+
+        Return a Path to a respawn clip to trigger a one-time resurrection.
+        The engine will reset the boss HP to the value returned by respawn_hp()
+        and continue the fight. Return None to let the boss die normally.
+
+        Default: no respawn.
+        """
+        return None
+
+    def respawn_hp(self, state: BossState) -> int:
+        """How much HP the boss is restored to after a respawn.
+
+        Only called when try_respawn() returns a clip path.
+        Default: 4.
+        """
+        return 4
+
+    def on_victory(self, state: BossState) -> Path | None:
+        """Called when the boss wins (human player's HP reaches 0).
+
+        Return a Path to a victory clip, or None to skip.
+        """
+        return None
+
+    def on_defeat(self, state: BossState) -> Path | None:
+        """Called when the boss is defeated (boss HP reaches 0 and no respawn).
+
+        Return a Path to a defeat clip, or None to skip.
         """
         return None

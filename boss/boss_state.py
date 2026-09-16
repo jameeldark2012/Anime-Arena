@@ -49,6 +49,10 @@ class BossState(MatchState):
         # Stored here so each BossState instance is self-contained.
         self.boss_never_defends: bool = config.never_defends
 
+        # The script instance lives here so stateful data (used clips, respawn
+        # flag, etc.) persists across every turn of the same fight.
+        self.script = config.get_script()
+
     # ------------------------------------------------------------------
     # Convenience properties
     # ------------------------------------------------------------------

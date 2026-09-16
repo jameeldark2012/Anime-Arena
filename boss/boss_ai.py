@@ -50,8 +50,25 @@ async def _post_clip(
     )
 
 
+def _inject_attack(boss_state: BossState, tier: str, attack_clip: tuple[bytes, str] | None) -> None:
+    """Append an attack action to boss_state and cache the clip bytes."""
+    filename = attack_clip[1] if attack_clip else f"boss_attack_{tier.lower()}.mp4"
+    boss_state.current_turn_actions.append({
+        "action_type": "attack",
+        "tier": tier,
+        "attachment_url": None,
+        "filename": filename,
+    })
+    if attack_clip:
+        boss_state.video_cache.setdefault(BOSS_PLAYER_ID, []).append({
+            "bytes": attack_clip[0],
+            "label": "ATTACK",
+            "filename": filename,
+        })
+
+
 # ---------------------------------------------------------------------------
-# Match-start hook (called by boss_manager when a fight is created)
+# Match-start hook (called by boss_battle cog when a fight is created)
 # ---------------------------------------------------------------------------
 
 async def run_boss_intro(
@@ -59,7 +76,7 @@ async def run_boss_intro(
     channel: discord.abc.Messageable,
 ) -> None:
     """Post the boss's intro clip (if any). Called once when the fight starts."""
-    script = boss_state.boss_config.get_script()
+    script = boss_state.script
     intro_path = script.on_match_start(boss_state)
     if intro_path:
         clip = _read_clip(intro_path)
@@ -68,6 +85,73 @@ async def run_boss_intro(
             f"⚔️ **{boss_state.boss_config.display_name}** appears!",
             clip,
         )
+
+
+# ---------------------------------------------------------------------------
+# Shared post-turn logic (respawn, reactions, win/loss)
+# ---------------------------------------------------------------------------
+
+async def _handle_post_turn(
+    boss_state: BossState,
+    channel: discord.abc.Messageable,
+    turn_summary: dict,
+    post_clip_path: Path | None,
+) -> dict:
+    """Handle everything after the attack clips and embed are posted.
+
+    Posts the post_clip (if any), checks respawn, posts reaction/taunt clips,
+    and handles victory/defeat clips.
+
+    Returns turn_summary (possibly modified if a respawn occurred).
+    """
+    config = boss_state.boss_config
+    script = boss_state.script
+
+    # ── Post-attack RP clip ───────────────────────────────────────────────────
+    if post_clip_path:
+        clip = _read_clip(post_clip_path)
+        await _post_clip(channel, "", clip)
+
+    # ── Respawn check ─────────────────────────────────────────────────────────
+    if turn_summary["winner_id"] == boss_state.player1_id:
+        respawn_path = script.try_respawn(boss_state)
+        if respawn_path:
+            new_hp = script.respawn_hp(boss_state)
+            boss_state.boss_hp = new_hp
+            boss_state.status = "active"
+            boss_state.winner_id = None
+            boss_state.loser_id = None
+
+            respawn_clip = _read_clip(respawn_path)
+            await _post_clip(
+                channel,
+                f"💀 **{config.display_name}** has fallen... but something stirs.",
+                respawn_clip,
+            )
+            await channel.send(
+                f"🔄 **{config.display_name} has been reborn!** "
+                f"HP restored to **{new_hp}**.\n"
+                f"▶️ **Turn {boss_state.current_turn}** — <@{boss_state.player1_id}>'s move!"
+            )
+            turn_summary = dict(turn_summary)
+            turn_summary["winner_id"] = None
+            turn_summary["loser_id"] = None
+            return turn_summary
+
+    # ── Victory / defeat clips ────────────────────────────────────────────────
+    if turn_summary.get("winner_id"):
+        if turn_summary["winner_id"] == BOSS_PLAYER_ID:
+            victory_path = script.on_victory(boss_state)
+            if victory_path:
+                clip = _read_clip(victory_path)
+                await _post_clip(channel, f"💀 **{config.display_name}** stands victorious.", clip)
+        else:
+            defeat_path = script.on_defeat(boss_state)
+            if defeat_path:
+                clip = _read_clip(defeat_path)
+                await _post_clip(channel, f"🏆 **{config.display_name}** has been defeated!", clip)
+
+    return turn_summary
 
 
 # ---------------------------------------------------------------------------
@@ -80,16 +164,14 @@ async def run_boss_turn(
 ) -> dict | None:
     """Execute the boss's full turn automatically and post results to the channel.
 
-    Flow:
-    1.  on_turn_start  → optional flavour clip before the action.
-    2.  should_defend  → if True, inject a defense action.
-    3.  should_attack  → if True, pick tier + clip and inject an attack action.
-    4.  end_turn       → resolve combat via the normal engine.
-    5.  Post attack clip(s) and turn embed.
-    6.  on_turn_end    → optional flavour clip after the embed.
-    7.  on_boss_hit / on_player_hit → reaction clips based on damage outcome.
+    If the script overrides plan_turn(), uses the scripted path:
+      pre_clip → attack → embed → post_clip → respawn/win/loss
 
-    Returns the turn_summary dict, or None if the turn could not run.
+    Otherwise falls back to the original hook-based path:
+      on_turn_start → should_defend → pick_tier → end_turn → embed →
+      on_turn_end → respawn → on_boss_hit/on_player_hit → win/loss
+
+    Returns the turn_summary dict (winner_id cleared if respawned), or None.
     """
     if not boss_state.is_boss_turn:
         logger.error("run_boss_turn called but it is not the boss's turn.")
@@ -99,15 +181,63 @@ async def run_boss_turn(
         return None
 
     config = boss_state.boss_config
-    script = config.get_script()
+    script = boss_state.script
 
-    # ── Step 1: Pre-turn flavour clip ─────────────────────────────────────────
+    from services.combat_service import generate_turn_embed
+
+    # =========================================================================
+    # SCRIPTED PATH — boss overrides plan_turn()
+    # =========================================================================
+    if script.uses_plan_turn():
+        pre_clip_path, tier, attack_clip_path, post_clip_path = script.plan_turn(boss_state)
+
+        # Pre-attack RP clip.
+        if pre_clip_path:
+            pre_clip = _read_clip(pre_clip_path)
+            await _post_clip(channel, f"*{config.display_name}...*", pre_clip)
+
+        # Resolve attack clip.
+        if attack_clip_path:
+            attack_clip = _read_clip(attack_clip_path)
+        else:
+            attack_clip = _pick_random_clip_for_tier(boss_state, tier)
+
+        _inject_attack(boss_state, tier, attack_clip)
+
+        # End the boss's turn via the combat engine.
+        success, message, turn_summary = await end_turn(boss_state, BOSS_PLAYER_ID)
+        if not success:
+            logger.error("Boss end_turn failed: %s", message)
+            return None
+
+        # Post the attack clip.
+        cached: list[dict] = boss_state.video_cache.pop(BOSS_PLAYER_ID, [])
+        for i, clip in enumerate(cached, start=1):
+            await channel.send(
+                content=f"📹 **{config.display_name}**",
+                file=discord.File(io.BytesIO(clip["bytes"]), filename=clip["filename"]),
+            )
+        if not cached:
+            logger.warning("Boss '%s' had no attack clip for tier '%s'.", config.slug, tier)
+            await channel.send(content=f"👊 **{config.display_name}** launches an attack!")
+
+        # Post the turn embed.
+        embed = await generate_turn_embed(boss_state, turn_summary)
+        await channel.send(content=f"⚔️ **{config.display_name}** ended their turn.", embed=embed)
+
+        return await _handle_post_turn(boss_state, channel, turn_summary, post_clip_path)
+
+    # =========================================================================
+    # HOOK-BASED PATH — base class / non-scripted boss
+    # =========================================================================
+
+    # Step 1: Pre-turn flavour clip.
     turn_start_path = script.on_turn_start(boss_state)
     if turn_start_path:
         clip = _read_clip(turn_start_path)
         await _post_clip(channel, f"*{config.display_name} stirs...*", clip)
 
-    # ── Step 2: Defense ───────────────────────────────────────────────────────
+    # Step 2: Defense.
     if script.should_defend(boss_state):
         defense_tier = script.pick_defense_tier(boss_state)
         defense_path = script.pick_defense_clip(boss_state, defense_tier)
@@ -115,7 +245,6 @@ async def run_boss_turn(
         if defense_path:
             defense_clip = _read_clip(defense_path)
         else:
-            # Fall back to a random clip from the standard defense folder.
             defense_folder = config.clips_dir / "defenses" / TIER_FOLDER.get(defense_tier, defense_tier.lower())
             clips = [
                 p for p in defense_folder.iterdir()
@@ -137,82 +266,57 @@ async def run_boss_turn(
                 "filename": defense_filename,
             })
 
-    # ── Step 3: Attack ────────────────────────────────────────────────────────
+    # Step 3: Attack.
     if script.should_attack(boss_state):
         tier = script.pick_tier(boss_state)
         attack_path = script.pick_attack_clip(boss_state, tier)
+        attack_clip = _read_clip(attack_path) if attack_path else _pick_random_clip_for_tier(boss_state, tier)
+        _inject_attack(boss_state, tier, attack_clip)
 
-        if attack_path:
-            attack_clip = _read_clip(attack_path)
-        else:
-            attack_clip = _pick_random_clip_for_tier(boss_state, tier)
-
-        attack_filename = attack_clip[1] if attack_clip else f"boss_attack_{tier.lower()}.mp4"
-        boss_state.current_turn_actions.append({
-            "action_type": "attack",
-            "tier": tier,
-            "attachment_url": None,
-            "filename": attack_filename,
-        })
-        if attack_clip:
-            boss_state.video_cache.setdefault(BOSS_PLAYER_ID, []).append({
-                "bytes": attack_clip[0],
-                "label": "ATTACK",
-                "filename": attack_filename,
-            })
-
-    # ── Step 4: End the boss's turn via the normal engine ─────────────────────
+    # Step 4: End turn.
     success, message, turn_summary = await end_turn(boss_state, BOSS_PLAYER_ID)
     if not success:
         logger.error("Boss end_turn failed: %s", message)
         return None
 
-    # ── Step 5: Post boss clips and turn embed ────────────────────────────────
-    cached: list[dict] = boss_state.video_cache.pop(BOSS_PLAYER_ID, [])
+    # Step 5: Post clips.
+    cached = boss_state.video_cache.pop(BOSS_PLAYER_ID, [])
     total = len(cached)
     for i, clip in enumerate(cached, start=1):
         await channel.send(
             content=f"📹 **{config.display_name}** *(Clip {i}/{total})*",
             file=discord.File(io.BytesIO(clip["bytes"]), filename=clip["filename"]),
         )
-
     if not cached and script.should_attack(boss_state):
-        logger.warning(
-            "Boss '%s' attacked with no clip available.", config.slug
-        )
-        await channel.send(
-            content=f"👊 **{config.display_name}** launches an attack!"
-        )
-    # ── Step 6: Post-turn flavour clip ────────────────────────────────────────
+        logger.warning("Boss '%s' attacked with no clip available.", config.slug)
+        await channel.send(content=f"👊 **{config.display_name}** launches an attack!")
+
+    # Step 6: Turn embed.
+    embed = await generate_turn_embed(boss_state, turn_summary)
+    await channel.send(content=f"⚔️ **{config.display_name}** ended their turn.", embed=embed)
+
+    # Step 7: Post-turn flavour.
     turn_end_path = script.on_turn_end(boss_state)
-    if turn_end_path:
-        clip = _read_clip(turn_end_path)
-        await _post_clip(channel, "", clip)
 
-    # ── Step 7: Reaction clips based on damage outcome ────────────────────────
-    resolution = turn_summary.get("resolution")  # damage the boss took this turn
-    attack_sent = turn_summary.get("attack_sent")  # outgoing attack (boss hit the player)
+    # Step 8-10: Respawn, reactions, win/loss.
+    turn_summary = await _handle_post_turn(boss_state, channel, turn_summary, turn_end_path)
 
-    # resolution = incoming attack that resolved against the boss this turn
-    if resolution and resolution.get("damage", 0) > 0:
-        boss_damage = resolution["damage"]
-        reaction_path = script.on_boss_hit(boss_state, boss_damage)
-        if reaction_path:
-            clip = _read_clip(reaction_path)
-            await _post_clip(channel, "", clip)
+    # Reaction clips (hook-based path only).
+    if not turn_summary.get("winner_id"):
+        resolution = turn_summary.get("resolution")
+        attack_sent = turn_summary.get("attack_sent")
 
-    # attack_sent = the boss's outgoing attack — we can estimate damage from HP delta.
-    # The simplest approach: check if player HP dropped compared to what it was before.
-    # We stored p1_hp in the summary so we can compare against boss_state.player1_hp.
-    p1_hp_after = turn_summary.get("p1_hp", boss_state.player1_hp)
-    # We don't have hp_before in the summary, but attack_sent tier implies damage.
-    if attack_sent:
-        tier_damage = {"Normal": 1, "Medium": 2, "Absolute": 3, "Over-Absolute": 4}
-        player_damage = tier_damage.get(attack_sent.get("tier", ""), 0)
-        if player_damage > 0:
-            taunt_path = script.on_player_hit(boss_state, player_damage)
-            if taunt_path:
-                clip = _read_clip(taunt_path)
-                await _post_clip(channel, "", clip)
+        if resolution and resolution.get("damage", 0) > 0:
+            reaction_path = script.on_boss_hit(boss_state, resolution["damage"])
+            if reaction_path:
+                await _post_clip(channel, "", _read_clip(reaction_path))
+
+        if attack_sent:
+            tier_damage = {"Normal": 1, "Medium": 2, "Absolute": 3, "Over-Absolute": 4}
+            player_damage = tier_damage.get(attack_sent.get("tier", ""), 0)
+            if player_damage > 0:
+                taunt_path = script.on_player_hit(boss_state, player_damage)
+                if taunt_path:
+                    await _post_clip(channel, "", _read_clip(taunt_path))
 
     return turn_summary
