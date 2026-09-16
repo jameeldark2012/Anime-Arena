@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from boss.boss_script import BossScript
 
 # Sentinel player ID used for ALL bosses in the Player table.
 # Must match the row seeded by scripts/seed_boss.py.
@@ -58,6 +62,13 @@ class BossConfig:
             "Over-Absolute": 1,
         }
     )
+    script_class: type[BossScript] | None = None
+
+    def get_script(self) -> BossScript:
+        """Return an instance of this boss's script, falling back to the base class."""
+        from boss.boss_script import BossScript as _Base
+        cls = self.script_class if self.script_class is not None else _Base
+        return cls()
 
     @property
     def clips_dir(self) -> Path:
@@ -84,6 +95,8 @@ class BossConfig:
 # Add new bosses here. The character_id must match an existing row in your DB.
 # Run scripts/seed_boss.py once to create the Player(-1) row and link the character.
 
+from boss.scripts.zeke import ZekeScript
+
 BOSSES: dict[str, BossConfig] = {
     "zeke": BossConfig(
         slug="zeke",
@@ -97,5 +110,6 @@ BOSSES: dict[str, BossConfig] = {
             "Absolute": 2,
             "Over-Absolute": 1,
         },
+        script_class=ZekeScript,
     ),
 }

@@ -8,7 +8,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from boss.boss_manager import boss_manager
-from boss.boss_ai import run_boss_turn
+from boss.boss_ai import run_boss_turn, run_boss_intro
 from boss.boss_config import BOSSES, BOSS_PLAYER_ID
 from services.combat_service import (
     record_action,
@@ -110,6 +110,16 @@ class BossBattleCog(commands.Cog):
             f"⚡ Boss fight started! Head to the match thread. "
             f"You go first — good luck against **{boss_state.boss_config.display_name}**!",
         )
+
+        # Post the boss's intro clip (if the script defines one).
+        thread = interaction.guild.get_channel(boss_state.match_id)
+        if thread is None:
+            try:
+                thread = await interaction.guild.fetch_channel(boss_state.match_id)
+            except Exception:
+                thread = None
+        if thread:
+            await run_boss_intro(boss_state, thread)
 
     async def boss_attack(self, interaction: discord.Interaction) -> None:
         await self.submit_attack(interaction)

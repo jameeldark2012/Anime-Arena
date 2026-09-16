@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import logging
 import random
+from pathlib import Path
 
 import discord
 
@@ -13,46 +14,65 @@ from services.combat_service import end_turn
 logger = logging.getLogger(__name__)
 
 
-def _pick_tier(boss_state: BossState) -> str:
-    """Randomly select an attack tier according to the boss's configured weights.
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
 
-    Only tiers that have at least one clip available are eligible.
-    Falls back to any tier with a weight if no clips exist (so the fight
-    can still proceed even before clips are dropped in).
-    """
-    config = boss_state.boss_config
-    tiers = list(config.attack_weights.keys())
-    weights = [config.attack_weights[t] for t in tiers]
-
-    # Prefer tiers that actually have clips ready.
-    tiers_with_clips = [t for t in tiers if config.get_clips(t)]
-    if tiers_with_clips:
-        weights_with_clips = [config.attack_weights[t] for t in tiers_with_clips]
-        return random.choices(tiers_with_clips, weights=weights_with_clips, k=1)[0]
-
-    # No clips at all — still pick a tier so the game state advances.
-    logger.warning(
-        "Boss '%s' has no clips in any tier folder. Boss will attack without a video.",
-        config.slug,
-    )
-    return random.choices(tiers, weights=weights, k=1)[0]
+def _read_clip(path: Path) -> tuple[bytes, str] | None:
+    """Read a clip from disk. Returns (bytes, filename) or None on error."""
+    try:
+        return path.read_bytes(), path.name
+    except OSError:
+        logger.exception("Failed to read boss clip: %s", path)
+        return None
 
 
-def _pick_clip(boss_state: BossState, tier: str) -> tuple[bytes, str] | None:
-    """Pick a random clip file for the given tier.
-
-    Returns (file_bytes, filename) or None if no clips are available.
-    """
+def _pick_random_clip_for_tier(boss_state: BossState, tier: str) -> tuple[bytes, str] | None:
+    """Pick a random clip from the standard tier folder. Returns (bytes, filename) or None."""
     clips = boss_state.boss_config.get_clips(tier)
     if not clips:
         return None
-    clip_path = random.choice(clips)
-    try:
-        return clip_path.read_bytes(), clip_path.name
-    except OSError:
-        logger.exception("Failed to read boss clip: %s", clip_path)
-        return None
+    return _read_clip(random.choice(clips))
 
+
+async def _post_clip(
+    channel: discord.abc.Messageable,
+    label: str,
+    clip_result: tuple[bytes, str] | None,
+) -> None:
+    """Post a single clip to the channel, or skip silently if clip_result is None."""
+    if not clip_result:
+        return
+    clip_bytes, filename = clip_result
+    await channel.send(
+        content=label,
+        file=discord.File(io.BytesIO(clip_bytes), filename=filename),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Match-start hook (called by boss_manager when a fight is created)
+# ---------------------------------------------------------------------------
+
+async def run_boss_intro(
+    boss_state: BossState,
+    channel: discord.abc.Messageable,
+) -> None:
+    """Post the boss's intro clip (if any). Called once when the fight starts."""
+    script = boss_state.boss_config.get_script()
+    intro_path = script.on_match_start(boss_state)
+    if intro_path:
+        clip = _read_clip(intro_path)
+        await _post_clip(
+            channel,
+            f"⚔️ **{boss_state.boss_config.display_name}** appears!",
+            clip,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Main boss turn
+# ---------------------------------------------------------------------------
 
 async def run_boss_turn(
     boss_state: BossState,
@@ -60,18 +80,16 @@ async def run_boss_turn(
 ) -> dict | None:
     """Execute the boss's full turn automatically and post results to the channel.
 
-    This is called by the boss_battle cog immediately after the human player
-    calls /end_turn. The function:
+    Flow:
+    1.  on_turn_start  → optional flavour clip before the action.
+    2.  should_defend  → if True, inject a defense action.
+    3.  should_attack  → if True, pick tier + clip and inject an attack action.
+    4.  end_turn       → resolve combat via the normal engine.
+    5.  Post attack clip(s) and turn embed.
+    6.  on_turn_end    → optional flavour clip after the embed.
+    7.  on_boss_hit / on_player_hit → reaction clips based on damage outcome.
 
-    1. Resolves any pending incoming attack (boss takes damage / blocks if it
-       ever defends — for now boss_never_defends means it just skips defense
-       and the engine handles the damage naturally via end_turn with no actions).
-    2. If the boss is not dead, picks a tier, picks a clip, injects an attack
-       action directly into the match state, then calls end_turn.
-    3. Posts the boss's clip(s) and the turn embed to the channel.
-
-    Returns the turn_summary dict from end_turn, or None if the boss turn
-    could not be executed (e.g. wrong player turn, match already finished).
+    Returns the turn_summary dict, or None if the turn could not run.
     """
     if not boss_state.is_boss_turn:
         logger.error("run_boss_turn called but it is not the boss's turn.")
@@ -81,56 +99,75 @@ async def run_boss_turn(
         return None
 
     config = boss_state.boss_config
+    script = config.get_script()
 
-    # ── Step 1: Handle incoming pending attack ────────────────────────────────
-    # If the human player attacked last turn, the boss needs to "respond."
-    # Since boss_never_defends=True, the boss takes full damage by doing nothing
-    # before its attack. We handle this by injecting a no-op first action only
-    # if the boss is configured to never defend AND there's a pending attack.
-    # Actually — the combat engine already handles this: if we call end_turn
-    # with no actions submitted, it treats it as no_defense and applies full
-    # damage. So we don't need to inject anything for the defense phase.
-    # We only inject the attack action below.
+    # ── Step 1: Pre-turn flavour clip ─────────────────────────────────────────
+    turn_start_path = script.on_turn_start(boss_state)
+    if turn_start_path:
+        clip = _read_clip(turn_start_path)
+        await _post_clip(channel, f"*{config.display_name} stirs...*", clip)
 
-    # ── Step 2: Check if boss is already dead (pending attack may have killed it) ──
-    # We'll call end_turn once with just the attack (or no attack if dead).
-    # The engine's end_turn resolves the pending attack on its own if no actions
-    # were submitted. But we want the boss to attack IN THE SAME TURN.
-    # So: inject the attack first, then call end_turn — the engine will resolve
-    # the pending defense + record the outgoing attack in one shot.
+    # ── Step 2: Defense ───────────────────────────────────────────────────────
+    if script.should_defend(boss_state):
+        defense_tier = script.pick_defense_tier(boss_state)
+        defense_path = script.pick_defense_clip(boss_state, defense_tier)
 
-    # Pick attack tier and clip.
-    tier = _pick_tier(boss_state)
-    clip_result = _pick_clip(boss_state, tier)
+        if defense_path:
+            defense_clip = _read_clip(defense_path)
+        else:
+            # Fall back to a random clip from the standard defense folder.
+            defense_folder = config.clips_dir / "defenses" / TIER_FOLDER.get(defense_tier, defense_tier.lower())
+            clips = [
+                p for p in defense_folder.iterdir()
+                if p.suffix.lower() in {".mp4", ".mov", ".webm", ".mkv"}
+            ] if defense_folder.exists() else []
+            defense_clip = _read_clip(random.choice(clips)) if clips else None
 
-    # Inject the boss's attack directly into the turn actions list.
-    # We bypass record_action (which expects a discord.Attachment) and
-    # write directly to the state — this is intentional for the AI path.
-    clip_filename = clip_result[1] if clip_result else f"boss_attack_{tier.lower()}.mp4"
-    attack_action = {
-        "action_type": "attack",
-        "tier": tier,
-        "attachment_url": None,   # no CDN URL — clip is served from disk
-        "filename": clip_filename,
-    }
-    boss_state.current_turn_actions.append(attack_action)
-
-    # Cache the clip bytes so end_turn's video pipeline can post it.
-    if clip_result:
-        clip_bytes, clip_filename = clip_result
-        boss_state.video_cache.setdefault(BOSS_PLAYER_ID, []).append({
-            "bytes": clip_bytes,
-            "label": "ATTACK",
-            "filename": clip_filename,
+        defense_filename = defense_clip[1] if defense_clip else f"boss_defense_{defense_tier.lower()}.mp4"
+        boss_state.current_turn_actions.append({
+            "action_type": "defense",
+            "tier": defense_tier,
+            "attachment_url": None,
+            "filename": defense_filename,
         })
+        if defense_clip:
+            boss_state.video_cache.setdefault(BOSS_PLAYER_ID, []).append({
+                "bytes": defense_clip[0],
+                "label": "DEFENSE",
+                "filename": defense_filename,
+            })
 
-    # ── Step 3: End the boss's turn via the normal engine ────────────────────
+    # ── Step 3: Attack ────────────────────────────────────────────────────────
+    if script.should_attack(boss_state):
+        tier = script.pick_tier(boss_state)
+        attack_path = script.pick_attack_clip(boss_state, tier)
+
+        if attack_path:
+            attack_clip = _read_clip(attack_path)
+        else:
+            attack_clip = _pick_random_clip_for_tier(boss_state, tier)
+
+        attack_filename = attack_clip[1] if attack_clip else f"boss_attack_{tier.lower()}.mp4"
+        boss_state.current_turn_actions.append({
+            "action_type": "attack",
+            "tier": tier,
+            "attachment_url": None,
+            "filename": attack_filename,
+        })
+        if attack_clip:
+            boss_state.video_cache.setdefault(BOSS_PLAYER_ID, []).append({
+                "bytes": attack_clip[0],
+                "label": "ATTACK",
+                "filename": attack_filename,
+            })
+
+    # ── Step 4: End the boss's turn via the normal engine ─────────────────────
     success, message, turn_summary = await end_turn(boss_state, BOSS_PLAYER_ID)
     if not success:
         logger.error("Boss end_turn failed: %s", message)
         return None
 
-    # ── Step 4: Post boss clips to the channel ────────────────────────────────
+    # ── Step 5: Post boss clips and turn embed ────────────────────────────────
     cached: list[dict] = boss_state.video_cache.pop(BOSS_PLAYER_ID, [])
     total = len(cached)
     for i, clip in enumerate(cached, start=1):
@@ -139,15 +176,43 @@ async def run_boss_turn(
             file=discord.File(io.BytesIO(clip["bytes"]), filename=clip["filename"]),
         )
 
-    if not cached:
-        # No clips available — fall back to a text description.
+    if not cached and script.should_attack(boss_state):
         logger.warning(
-            "Boss '%s' attacked with tier '%s' but had no clip to send.",
-            config.slug,
-            tier,
+            "Boss '%s' attacked with no clip available.", config.slug
         )
         await channel.send(
-            content=f"👊 **{config.display_name}** launches a **{tier}** attack!"
+            content=f"👊 **{config.display_name}** launches an attack!"
         )
+    # ── Step 6: Post-turn flavour clip ────────────────────────────────────────
+    turn_end_path = script.on_turn_end(boss_state)
+    if turn_end_path:
+        clip = _read_clip(turn_end_path)
+        await _post_clip(channel, "", clip)
+
+    # ── Step 7: Reaction clips based on damage outcome ────────────────────────
+    resolution = turn_summary.get("resolution")  # damage the boss took this turn
+    attack_sent = turn_summary.get("attack_sent")  # outgoing attack (boss hit the player)
+
+    # resolution = incoming attack that resolved against the boss this turn
+    if resolution and resolution.get("damage", 0) > 0:
+        boss_damage = resolution["damage"]
+        reaction_path = script.on_boss_hit(boss_state, boss_damage)
+        if reaction_path:
+            clip = _read_clip(reaction_path)
+            await _post_clip(channel, "", clip)
+
+    # attack_sent = the boss's outgoing attack — we can estimate damage from HP delta.
+    # The simplest approach: check if player HP dropped compared to what it was before.
+    # We stored p1_hp in the summary so we can compare against boss_state.player1_hp.
+    p1_hp_after = turn_summary.get("p1_hp", boss_state.player1_hp)
+    # We don't have hp_before in the summary, but attack_sent tier implies damage.
+    if attack_sent:
+        tier_damage = {"Normal": 1, "Medium": 2, "Absolute": 3, "Over-Absolute": 4}
+        player_damage = tier_damage.get(attack_sent.get("tier", ""), 0)
+        if player_damage > 0:
+            taunt_path = script.on_player_hit(boss_state, player_damage)
+            if taunt_path:
+                clip = _read_clip(taunt_path)
+                await _post_clip(channel, "", clip)
 
     return turn_summary
