@@ -306,7 +306,7 @@ class ZekeScript(BossScript):
         return path
 
     def respawn_hp(self, state: BossState) -> int:
-        return 4
+        return 10
 
     # ------------------------------------------------------------------
     # Victory / defeat

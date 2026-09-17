@@ -283,20 +283,54 @@ class BossBattleCog(commands.Cog):
             await interaction.response.send_message(err, ephemeral=True)
             return
 
-        boss_manager.remove_fight(boss_state.match_id)
         await interaction.response.send_message(
             f"🏳️ <@{interaction.user.id}> has **surrendered** the boss fight!\n"
             f"**{boss_state.boss_config.display_name}** remains undefeated…"
         )
+        # Fire the victory clip, then tear down the fight.
+        await _handle_match_over(boss_state, interaction.channel, BOSS_PLAYER_ID)
 
 
 # ---------------------------------------------------------------------------
 # Shared match-over handler
 # ---------------------------------------------------------------------------
 
-async def _handle_match_over(boss_state, channel: discord.abc.Messageable, winner_id: int) -> None:
-    boss_manager.remove_fight(boss_state.match_id)
+async def _fire_boss_victory_or_defeat_clip(
+    boss_state,
+    channel: discord.abc.Messageable,
+    winner_id: int,
+) -> None:
+    """Post Zeke's on_victory or on_defeat clip before the match is torn down."""
+    from boss.boss_ai import _read_clip, _post_clip
+
+    script = boss_state.script
     config = boss_state.boss_config
+
+    if winner_id == BOSS_PLAYER_ID:
+        path = script.on_victory(boss_state)
+        if path:
+            await _post_clip(
+                channel,
+                f"💀 **{config.display_name}** stands victorious.",
+                await _read_clip(path),
+            )
+    else:
+        path = script.on_defeat(boss_state)
+        if path:
+            await _post_clip(
+                channel,
+                f"🏆 **{config.display_name}** has been defeated!",
+                await _read_clip(path),
+            )
+
+
+async def _handle_match_over(boss_state, channel: discord.abc.Messageable, winner_id: int) -> None:
+    config = boss_state.boss_config
+
+    # Fire the victory/defeat clip before tearing down the fight.
+    await _fire_boss_victory_or_defeat_clip(boss_state, channel, winner_id)
+
+    boss_manager.remove_fight(boss_state.match_id)
 
     if winner_id == BOSS_PLAYER_ID:
         result = (

@@ -101,7 +101,7 @@ BOSSES: dict[str, BossConfig] = {
     "zeke": BossConfig(
         slug="zeke",
         display_name="Zeke",
-        hp=10,
+        hp=20,
         character_id=142314,
         never_defends=True,
         attack_weights={

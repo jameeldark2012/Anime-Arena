@@ -232,6 +232,18 @@ class RefereeCog(commands.Cog):
             else match_state.player1_id
         )
 
+        # For boss fights, route through the boss-aware handler so the
+        # victory/defeat clip fires before the fight is torn down.
+        from boss.boss_state import BossState as _BossState
+        from app.cogs.boss_battle import _handle_match_over as _boss_match_over
+        if isinstance(match_state, _BossState):
+            await interaction.response.send_message(
+                f"🧑‍⚖️ **Referee Decision:** <@{winner.id}> is declared the winner!\n"
+                f"<@{loser_id}> loses. Match is now closed."
+            )
+            await _boss_match_over(match_state, interaction.channel, winner.id)
+            return
+
         match_state.status = "finished"
         _remove_match(match_state)
 
@@ -261,13 +273,14 @@ class RefereeCog(commands.Cog):
             )
             return
 
-        match_state.status = "finished"
-        _remove_match(match_state)
+        from boss.boss_config import BOSS_PLAYER_ID as _BOSS_ID
+        from app.cogs.boss_battle import _handle_match_over as _boss_match_over
 
         await interaction.response.send_message(
             f"🧑‍⚖️ **Referee Decision:** **{match_state.boss_config.display_name}** is declared the winner!\n"
             f"<@{match_state.player1_id}> loses. Boss fight is now closed."
         )
+        await _boss_match_over(match_state, interaction.channel, _BOSS_ID)
 
     # ── /ref_resume ───────────────────────────────────────────────────────────
 

@@ -141,24 +141,8 @@ async def _handle_post_turn(
             turn_summary["loser_id"] = None
             return turn_summary
 
-    # Victory / defeat clips.
-    if turn_summary.get("winner_id"):
-        if turn_summary["winner_id"] == BOSS_PLAYER_ID:
-            victory_path = script.on_victory(boss_state)
-            if victory_path:
-                await _post_clip(
-                    channel,
-                    f"💀 **{config.display_name}** stands victorious.",
-                    await _read_clip(victory_path),
-                )
-        else:
-            defeat_path = script.on_defeat(boss_state)
-            if defeat_path:
-                await _post_clip(
-                    channel,
-                    f"🏆 **{config.display_name}** has been defeated!",
-                    await _read_clip(defeat_path),
-                )
+    # Victory / defeat clips are posted by _handle_match_over in boss_battle.py,
+    # which is called after this function returns. Nothing to do here.
 
     return turn_summary
 
