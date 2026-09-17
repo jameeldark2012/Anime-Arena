@@ -3,8 +3,7 @@
 config.env
 dbconfig.env
 debug.log
-.refact/
-assets/
+
 # Editor and Jupyter folders
 .vscode/
 .ipynb_checkpoints/
@@ -12,3 +11,8 @@ __pycache__/
 
 # Data files (Prevents pushing large CSVs to GitHub)
 data/
+
+# Other folders
+.refact/
+assets/
+Video demonstrations/
