@@ -22,11 +22,15 @@ class PlayersCog(commands.Cog):
 
         lines: list[str] = []
         for player, character in entries:
+            # Skip internal bot/boss accounts (negative or zero user IDs).
+            if player.user_id <= 0:
+                continue
+
             user = interaction.guild.get_member(player.user_id) if interaction.guild else None
             if user is None:
                 try:
                     user = await self.bot.fetch_user(player.user_id)
-                except discord.NotFound:
+                except (discord.NotFound, discord.HTTPException):
                     pass
             name = user.display_name if user else str(player.user_id)
 
@@ -35,6 +39,10 @@ class PlayersCog(commands.Cog):
                 lines.append(f"**{name}** — {character.character_name} (*{anime_name}*)")
             else:
                 lines.append(f"**{name}** — *No character reserved*")
+
+        if not lines:
+            await interaction.followup.send("No players have registered yet.")
+            return
 
         await interaction.followup.send("\n".join(lines))
 
