@@ -36,5 +36,21 @@ class ArenaBot(commands.Bot):
     async def on_ready(self) -> None:
         print(f"Logged in as {self.user} (ID: {self.user.id})")
 
+    async def on_command_error(self, interaction: discord.Interaction, error: commands.CommandError) -> None:
+        """Log cog command errors so stuck/failed commands show the real traceback instead of hanging."""
+        logger.error("Command error: %s", error, exc_info=error)
+        if isinstance(error, commands.AppCommandNotFound):
+            return
+        if isinstance(error, (commands.CommandOnCooldown, commands.CheckFailure)):
+            try:
+                await interaction.response.edit_message(content=error.original or error)
+            except discord.HTTPException:
+                pass
+            return
+        if not interaction.response.is_done():
+            await interaction.response.send_message(f"⚠️ Error: `{error}`")
+        else:
+            await interaction.followup.send(f"⚠️ Error: `{error}`")
+
 
 bot = ArenaBot(command_prefix="!", intents=intents)
