@@ -52,10 +52,12 @@ If you were ever part of the old-school Facebook anime battle groups, this is th
 ### Referee-only
 | Command | Description |
 |---|---|
-| `/resolve` | Unpause a match after review |
-| `/set_hp @player` | Manually correct a player's HP (0–4) |
-| `/rollback` | Rewind the match to the previous turn |
-| `/force_end @winner` | End the match immediately, declare a winner |
+| `/ref_view` | Inspect the current match state and snapshot history |
+| `/ref_set_hp @player` | Manually correct a player's HP (0–4) |
+| `/ref_declare_winner @winner` | Declare a winner and end the match |
+| `/ref_boss_wins` | Declare the boss as winner in a boss fight |
+| `/ref_resume` | Resume a paused match |
+| `/ref_rollback` | Rewind the match to a previous turn snapshot |
 
 ---
 
@@ -65,7 +67,7 @@ If you were ever part of the old-school Facebook anime battle groups, this is th
 - **PostgreSQL** (hosted on [Neon](https://neon.tech)) via [Tortoise ORM](https://tortoise.github.io/)
 - **FFmpeg** for video conversion and subtitle burn-in
 - **TQDM** for progress output in batch media scripts
-- Character/anime data seeded from a local dataset, validated against real anime sources
+- Character/anime data sourced from the Kaggle dataset: [MyAnimeList Jikan Database](https://www.kaggle.com/datasets/andreuvallhernndez/myanimelist-jikan?select=characters.csv)
 
 ## 📁 Project Structure
 
