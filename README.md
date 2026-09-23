@@ -101,6 +101,34 @@ anime_arena/
 
 ---
 
+## 🎬 Media processing utilities
+
+These are helper commands used for preparing anime files before they are used in battle clips.
+
+### Burn subtitles into a folder of videos
+
+```bash
+python -m scripts.batch_nvenc_burn "\\Desktop-l967ko4\e2\Media\Bleach\Anime\18"
+```
+
+Use a dry run first to preview what would be processed:
+
+```bash
+python -m scripts.batch_nvenc_burn "E:\test" --dry-run
+```
+
+This script recursively scans the chosen folder and subfolders, finds subtitle tracks, and burns them into exported MP4 files using NVENC.
+
+### Convert videos to H.264
+
+```bash
+python -m scripts.convert_to_h264 "\\Desktop-l967ko4\e2\Media\Bleach\Anime"
+```
+
+This recursively converts videos in the target folder and its subfolders to H.264-compatible MP4 output files.
+
+---
+
 ## 🗺️ Roadmap
 
 - [x] Character claim system with fuzzy search
@@ -109,7 +137,7 @@ anime_arena/
 - [ ] Points and ranking system
 - [ ] Roleplay scoring
 - [ ] Character challenge system (contest a claimed character)
-- [ ] AI referee, trained on logged human rulings
+- [ ] AI referee, trained to log and resolve rulings
 
 ---
 

@@ -3,16 +3,16 @@ batch_nvenc_burn.py
 -------------------
 Recursively processes all video files in a folder (and its subfolders):
   1. Probes the file with ffprobe to find the best English subtitle track.
-  2. Extracts that subtitle track as a temp .ass file.
+  2. Extracts that subtitle track as a temp .ass or .srt file.
   3. Burns those subtitles into an .mp4 output using NVIDIA NVENC.
 
 The original file is left completely untouched.
 
 Selection priority for subtitle track:
-  - Must be ASS/SSA format
+  - Must be ASS/SSA or SRT format
   - Prefers tracks whose language tag or title contains "eng" / "english"
   - Skips tracks whose title contains "sign" (Signs-Songs tracks)
-  - Falls back to the first ASS track found if nothing better matches
+  - Falls back to the first matching subtitle stream found if nothing better matches
 
 Usage:
     python -m scripts.batch_nvenc_burn <folder>
@@ -63,15 +63,15 @@ def _collect_videos(root: Path) -> list[Path]:
 def _find_sub_stream(src: Path) -> int | None:
     """
     Probe src with ffprobe and return the absolute stream index of the best
-    English ASS subtitle track.
+    English ASS/SSA or SRT subtitle track.
 
     Selection logic:
-      1. Must be codec ass or ssa.
+      1. Must be codec ass, ssa, or srt/subrip.
       2. Skip if title contains "sign" (case-insensitive).
       3. Prefer if language tag contains "eng" OR title contains "eng"/"english".
-      4. Fall back to first ASS stream if nothing preferred is found.
+      4. Fall back to the first matching subtitle stream if nothing preferred is found.
 
-    Returns the absolute stream index (e.g. 4), or None if no ASS track exists.
+    Returns the absolute stream index (e.g. 4), or None if no supported subtitle track exists.
     """
     cmd = [
         "ffprobe",
@@ -91,12 +91,13 @@ def _find_sub_stream(src: Path) -> int | None:
         logger.error("ffprobe returned invalid JSON for %s", src.name)
         return None
 
-    first_ass = None
+    first_supported = None
     best_match = None
+    subtitle_format = None
 
     for stream in streams:
         codec = stream.get("codec_name", "").lower()
-        if codec not in ("ass", "ssa"):
+        if codec not in ("ass", "ssa", "srt", "subrip"):
             continue
 
         index = stream.get("index")
@@ -104,32 +105,30 @@ def _find_sub_stream(src: Path) -> int | None:
         lang = tags.get("language", "").lower()
         title = tags.get("title", "").lower()
 
-        # Skip Signs-Songs tracks
         if "sign" in title:
             continue
 
-        # Track the first ASS stream as fallback
-        if first_ass is None:
-            first_ass = index
+        if first_supported is None:
+            first_supported = index
+            subtitle_format = codec
 
-        # Prefer English tracks
         if "eng" in lang or "eng" in title or "english" in title:
             best_match = index
-            break  # take the first English full-subs track we find
+            subtitle_format = codec
+            break
 
-    chosen = best_match if best_match is not None else first_ass
+    chosen = best_match if best_match is not None else first_supported
 
     if chosen is None:
-        logger.warning("SKIP   no ASS subtitle track found in: %s", src.name)
+        logger.warning("SKIP   no ASS/SRT subtitle track found in: %s", src.name)
     else:
-        # Log which track was chosen for visibility
         stream_info = next((s for s in streams if s.get("index") == chosen), {})
         tags = stream_info.get("tags", {})
         title = tags.get("title", "unknown")
         lang = tags.get("language", "?")
         logger.info(
-            "SUB    stream #%d  lang=%s  title=%s  ← chosen",
-            chosen, lang, title,
+            "SUB    stream #%d  format=%s  lang=%s  title=%s  ← chosen",
+            chosen, subtitle_format, lang, title,
         )
 
     return chosen
@@ -163,17 +162,22 @@ def _burn(src: Path, subs_file: Path) -> bool:
     Returns True on success, False on failure.
     """
     out_path = src.with_suffix(".mp4")
-    # Run with cwd = folder so we pass only the bare filename to ass=
-    # avoiding all Windows path/special-char escaping issues in filtergraphs.
     cwd = src.parent
+
+    # Use the appropriate FFmpeg filter depending on subtitle type.
+    if subs_file.suffix.lower() in {".ass", ".ssa"}:
+        vf = f"ass={subs_file.name},format=yuv420p"
+    else:
+        # For SRT, use subtitles filter. This works for plain text subtitles.
+        vf = f"subtitles={subs_file.name}:force_style='Fontname=Arial,PrimaryColour=&HFFFFFF&',format=yuv420p"
 
     cmd = [
         "ffmpeg",
         "-y",
         "-i", str(src),
-        "-map", "0:v:0",        # first video track
-        "-map", "0:a:0",        # first audio track (Japanese)
-        "-vf", f"ass={subs_file.name},format=yuv420p",
+        "-map", "0:v:0",
+        "-map", "0:a:0",
+        "-vf", vf,
         "-c:v", "h264_nvenc",
         "-preset", "p1",
         "-c:a", "aac",
@@ -208,8 +212,44 @@ def _process(src: Path, dry_run: bool) -> bool:
     if stream_index is None:
         return False
 
-    # Safe temp filename — no spaces/brackets so the ass= filter doesn't choke
-    subs_tmp = src.parent / "subs_temp_extracted.ass"
+    # Safe temp filename — no spaces/brackets so the subtitle filter doesn't choke
+    if stream_index is not None:
+        codec = None
+        stream_info = None
+        for s in subprocess.run(
+            ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_streams", str(src)],
+            capture_output=True,
+            text=True,
+            errors="replace",
+            check=False,
+        ).stdout:
+            pass
+        try:
+            streams = json.loads(
+                subprocess.run(
+                    ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_streams", str(src)],
+                    capture_output=True,
+                    text=True,
+                    errors="replace",
+                    check=False,
+                ).stdout
+            ).get("streams", [])
+            stream_info = next((s for s in streams if s.get("index") == stream_index), None)
+            if stream_info:
+                codec = stream_info.get("codec_name", "").lower()
+        except Exception:
+            codec = None
+
+        if codec in {"ass", "ssa"}:
+            suffix = ".ass"
+        elif codec in {"srt", "subrip"}:
+            suffix = ".srt"
+        else:
+            suffix = ".ass"
+    else:
+        suffix = ".ass"
+
+    subs_tmp = src.parent / f"subs_temp_extracted{suffix}"
 
     # Step 2: extract it
     logger.info("EXTRACT  %s", src.name)
@@ -220,7 +260,7 @@ def _process(src: Path, dry_run: bool) -> bool:
     logger.info("BURN     %s", src.name)
     success = _burn(src, subs_tmp)
 
-    # Always clean up the temp .ass regardless of outcome
+    # Always clean up the temp subtitle regardless of outcome
     if subs_tmp.exists():
         subs_tmp.unlink()
 
