@@ -20,6 +20,8 @@ Anime Arena is built on one idea: combat should be judged by real footage and lo
 - **Hidden information** — your opponent only sees your clip and the resulting damage, never your tier
 - **Logical combat** — abilities must be properly set up to work; defenses have to make physical sense
 - **Human referees** — disputes get resolved by a real person, not an algorithm (for now)
+- **Boss battles** — custom boss encounters use scripted logic and fight-specific behavior
+- **Media prep tools** — convert files to Discord-safe H.264 and burn subtitles into anime clips for battle use
 - **Roleplay rewards** — staying in character is planned to feed directly into the points/ranking system
 
 If you were ever part of the old-school Facebook anime battle groups, this is that same idea, rebuilt for Discord.
@@ -34,6 +36,7 @@ If you were ever part of the old-school Facebook anime battle groups, this is th
 | `/reserve` | Reserve a character — search by anime, then by character name |
 | `/my_character` | Check your currently reserved character |
 | `/players` | See all players and their reserved characters |
+| `/player` | Look up any player's currently reserved character by ID or mention |
 | `/challenge @player` | Send a match request — 60s to accept/decline |
 
 ### In a match
@@ -60,20 +63,37 @@ If you were ever part of the old-school Facebook anime battle groups, this is th
 
 - **Python** + [discord.py](https://github.com/Rapptz/discord.py)
 - **PostgreSQL** (hosted on [Neon](https://neon.tech)) via [Tortoise ORM](https://tortoise.github.io/)
+- **FFmpeg** for video conversion and subtitle burn-in
+- **TQDM** for progress output in batch media scripts
 - Character/anime data seeded from a local dataset, validated against real anime sources
 
 ## 📁 Project Structure
 
 ```
-anime_arena/
-├── app/            # Bot entrypoint and Discord-facing logic
-├── core/           # Shared config (env vars, settings)
+Anime Arena/
+├── app/
+│   ├── cogs/          # Discord commands and match/boss/referee logic
+│   ├── bot.py         # Bot bootstrap and extension loader
+│   └── main.py        # Entry point for the application
+├── boss/              # Boss system, configs, state, AI, and scripted behaviors
+├── core/              # Shared config values and environment setup
 ├── database/
-│   ├── models/     # Anime, Player, Character models
-│   └── database.py
-├── services/       # Business logic (claims, matchmaking, combat)
-├── scripts/        # One-off tools (data import, table creation)
-└── config.env      # Local environment config (not committed)
+│   ├── models/        # Anime, Player, Character models
+│   └── database.py    # DB setup and session handling
+├── services/          # Game logic services and match helpers
+├── scripts/
+│   ├── batch_nvenc_burn.py   # Batch subtitle burning with NVENC
+│   ├── convert_to_h264.py    # Recursive H.264 conversion for Discord-safe files
+│   ├── db_tables_creation.py # DB table generation
+│   └── ...
+├── assets/
+│   └── boss_clips/    # Boss attack/defense/intros media assets
+├── data/              # CSV datasets for anime/character data
+├── Video demonstrations/ # Example video records and clips
+├── config.env         # Local environment config
+├── requirements.txt    # Python requirements
+├── README.md          # Project overview and usage notes
+└── .gitignore
 ```
 
 ---
@@ -117,7 +137,7 @@ Use a dry run first to preview what would be processed:
 python -m scripts.batch_nvenc_burn "E:\test" --dry-run
 ```
 
-This script recursively scans the chosen folder and subfolders, finds subtitle tracks, and burns them into exported MP4 files using NVENC.
+This script recursively scans the chosen folder and subfolders, finds subtitle tracks, and burns them into exported MP4 files using NVENC. It prefers English subtitle streams and supports both ASS/SSA and SRT subtitle types.
 
 ### Convert videos to H.264
 
@@ -127,13 +147,18 @@ python -m scripts.convert_to_h264 "\\Desktop-l967ko4\e2\Media\Bleach\Anime"
 
 This recursively converts videos in the target folder and its subfolders to H.264-compatible MP4 output files.
 
+> These media scripts are intended for local media prep and should be run from the project root with FFmpeg available on PATH.
+
 ---
 
 ## 🗺️ Roadmap
 
 - [x] Character claim system with fuzzy search
 - [x] Turn-based combat with tiered damage
+- [x] Boss battle system with scripted enemy logic
 - [x] Referee dispute/objection flow
+- [x] Player lookup command for any registered user
+- [x] Batch media conversion and subtitle burn-in tooling
 - [ ] Points and ranking system
 - [ ] Roleplay scoring
 - [ ] Character challenge system (contest a claimed character)
