@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import asyncio
 
-from services.match_manager_service import MatchState
-from services import combat_service
+from services.match.match_manager_service import MatchState
+from services.combat import combat_service
 
 
 class FakeAttachment:

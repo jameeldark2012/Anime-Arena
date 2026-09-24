@@ -4,7 +4,7 @@ from tortoise.transactions import in_transaction
 from database.models.anime import Anime
 from database.models.character import Character
 from database.models.player import Player
-from services.character_service import get_or_fetch_characters
+from services.player.character_service import get_or_fetch_characters
 
 
 async def change_player_reservation(

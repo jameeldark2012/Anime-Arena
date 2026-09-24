@@ -4,7 +4,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from services.match_manager_service import match_manager, MatchState
+from services.match.match_manager_service import match_manager, MatchState
 from boss.boss_manager import boss_manager
 from core.config import settings
 

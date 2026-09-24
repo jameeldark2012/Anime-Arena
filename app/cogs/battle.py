@@ -5,11 +5,12 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from services.match_manager_service import match_manager
+from services.match.match_manager_service import match_manager
 from boss.boss_manager import boss_manager
 from core.config import settings
 from core.debug import debug_event
-from services.combat_service import (    record_action,
+from services.combat.combat_service import (
+    record_action,
     end_turn,
     generate_turn_embed,
     get_active_player,

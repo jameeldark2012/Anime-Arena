@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from boss.boss_config import BossConfig, BOSS_PLAYER_ID
-from services.match_manager_service import MatchState
+from services.match.match_manager_service import MatchState
 
 
 class BossState(MatchState):

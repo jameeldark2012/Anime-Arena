@@ -10,7 +10,7 @@ import discord
 
 from boss.boss_config import BOSS_PLAYER_ID, TIER_FOLDER
 from boss.boss_state import BossState
-from services.combat_service import end_turn
+from services.combat.combat_service import end_turn
 
 logger = logging.getLogger(__name__)
 
@@ -166,7 +166,7 @@ async def run_boss_turn(
     config = boss_state.boss_config
     script = boss_state.script
 
-    from services.combat_service import generate_turn_embed
+    from services.combat.combat_service import generate_turn_embed
 
     # =========================================================================
     # SCRIPTED PATH

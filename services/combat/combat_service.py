@@ -3,8 +3,8 @@ from __future__ import annotations
 import logging
 import discord
 
-from services import media_service
-from services.match_manager_service import MatchState
+from services.media import media_service
+from services.match.match_manager_service import MatchState
 from database.models.character import Character
 
 # Backward-compatible aliases for the older module-level monkeypatch shape used

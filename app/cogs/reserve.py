@@ -65,7 +65,7 @@ class ReserveCog(commands.Cog):
         await interaction.response.defer()
 
         # Block reservations while the player is in an active match or boss fight.
-        from services.match_manager_service import match_manager
+        from services.match.match_manager_service import match_manager
         from boss.boss_manager import boss_manager
 
         in_pvp = any(

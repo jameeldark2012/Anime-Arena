@@ -7,7 +7,7 @@ from typing import Callable, Awaitable
 import discord
 from discord.ext import commands
 
-from services.combat_service import record_action
+from services.combat.combat_service import record_action
 from core.config import settings
 from core.debug import debug_event
 
@@ -186,7 +186,7 @@ class TierSelectView(discord.ui.View):
             tier=tier,
         )
 
-        from services.match_manager_service import match_manager as _mm
+        from services.match.match_manager_service import match_manager as _mm
         state = self.state_getter(interaction)
         if not state:
             debug_event("TierSelectView_no_match", active_matches=list(_mm._active_matches.keys()))

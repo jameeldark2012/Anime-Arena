@@ -5,7 +5,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from services.match_manager_service import match_manager
+from services.match.match_manager_service import match_manager
 
 # How long the challenged player has to respond before the challenge expires.
 CHALLENGE_TIMEOUT = 60

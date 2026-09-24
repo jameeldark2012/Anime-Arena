@@ -5,8 +5,8 @@ import asyncio
 import discord
 
 from core.config import settings
-from services import match_manager_service
-from services.match_manager_service import MatchManagerService
+from services.match import match_manager_service
+from services.match.match_manager_service import MatchManagerService
 
 
 class FakeMember:

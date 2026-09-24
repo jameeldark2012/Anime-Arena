@@ -10,7 +10,7 @@ from discord.ext import commands
 from boss.boss_manager import boss_manager
 from boss.boss_ai import run_boss_turn, run_boss_intro
 from boss.boss_config import BOSSES, BOSS_PLAYER_ID
-from services.combat_service import (
+from services.combat.combat_service import (
     record_action,
     end_turn,
     generate_turn_embed,
