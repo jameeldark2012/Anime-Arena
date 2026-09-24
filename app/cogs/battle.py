@@ -8,6 +8,7 @@ from discord.ext import commands
 from services.match_manager_service import match_manager
 from boss.boss_manager import boss_manager
 from core.config import settings
+from core.debug import debug_event
 from services.combat_service import (    record_action,
     end_turn,
     generate_turn_embed,
@@ -54,23 +55,26 @@ class BattleCog(commands.Cog):
         self, interaction: discord.Interaction
     ) -> tuple[object | None, str | None]:
         """Return (match_state, error). If error is set, abort."""
-        if settings.DEBUG:
-            print(
-                f"[DEBUG _validate] channel_id={interaction.channel_id}  "
-                f"user={interaction.user.id}  "
-                f"active_matches={list(match_manager._active_matches.keys())}"
-            )
+        debug_event(
+            "_validate",
+            channel_id=interaction.channel_id,
+            user_id=interaction.user.id,
+            active_matches=list(match_manager._active_matches.keys()),
+        )
         match_state = match_manager.get_match_for_interaction(interaction)
         if not match_state:
-            if settings.DEBUG:
-                print(f"[DEBUG _validate] FAIL: no match for channel_id={interaction.channel_id}")
+            debug_event("_validate_fail", channel_id=interaction.channel_id, reason="no_match")
             return None, f"This command can only be used inside an active match channel. (ch={interaction.channel_id})"
         if interaction.user.id not in (match_state.player1_id, match_state.player2_id):
-            if settings.DEBUG:
-                print(f"[DEBUG _validate] FAIL: user={interaction.user.id} not in match (p1={match_state.player1_id}, p2={match_state.player2_id})")
+            debug_event(
+                "_validate_fail",
+                user_id=interaction.user.id,
+                p1=match_state.player1_id,
+                p2=match_state.player2_id,
+                reason="user_not_in_match",
+            )
             return None, "You are not a participant in this match."
-        if settings.DEBUG:
-            print(f"[DEBUG _validate] OK: match found, user is participant")
+        debug_event("_validate_ok", user_id=interaction.user.id)
         return match_state, None
 
     def _guard_active_player(
@@ -214,8 +218,11 @@ class BattleCog(commands.Cog):
 
         match_state = match_manager.get_match_for_interaction(interaction)
         if not match_state:
-            if settings.DEBUG:
-                print(f"[DEBUG end_turn_cmd] FAIL: channel_id={interaction.channel_id}  active_matches={list(match_manager._active_matches.keys())}")
+            debug_event(
+                "end_turn_cmd_fail",
+                channel_id=interaction.channel_id,
+                active_matches=list(match_manager._active_matches.keys()),
+            )
             await interaction.followup.send(f"This is not an active match channel. (ch={interaction.channel_id})", ephemeral=True)
             return
 

@@ -6,6 +6,7 @@ import logging
 import discord
 
 from core.config import settings
+from core.debug import debug_event
 from database.models.player import Player
 from database.models.character import Character
 
@@ -184,12 +185,13 @@ class MatchManagerService:
 
         self._active_matches[match_state.match_id] = match_state
         self._active_pairs.add(pair)
-        if settings.DEBUG:
-            print(
-                f"[DEBUG create_match_post] stored match_id={match_state.match_id}  "
-                f"parent_id={forum_thread.thread.parent_id}  "
-                f"player1={player1_id}  player2={player2_id}"
-            )
+        debug_event(
+            "create_match_post",
+            match_id=match_state.match_id,
+            parent_id=forum_thread.thread.parent_id,
+            player1=player1_id,
+            player2=player2_id,
+        )
         return match_state, None
 
     def get_match(self, channel_id: int) -> MatchState | None:

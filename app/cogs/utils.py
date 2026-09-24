@@ -9,6 +9,7 @@ from discord.ext import commands
 
 from services.combat_service import record_action
 from core.config import settings
+from core.debug import debug_event
 
 # How long (seconds) temporary public messages linger before auto-deletion.
 TEMP_MSG_TTL = 30
@@ -177,17 +178,18 @@ class TierSelectView(discord.ui.View):
     async def _handle_tier(self, interaction: discord.Interaction, tier: str) -> None:
         self.stop()
 
-        if settings.DEBUG:
-            print(
-                f"[DEBUG TierSelectView] channel_id={interaction.channel_id}  "
-                f"user={interaction.user.id}  action={self.action_type}  tier={tier}"
-            )
+        debug_event(
+            "TierSelectView",
+            channel_id=interaction.channel_id,
+            user_id=interaction.user.id,
+            action=self.action_type,
+            tier=tier,
+        )
 
         from services.match_manager_service import match_manager as _mm
         state = self.state_getter(interaction)
         if not state:
-            if settings.DEBUG:
-                print(f"[DEBUG TierSelectView] No match found! active_matches={list(_mm._active_matches.keys())}")
+            debug_event("TierSelectView_no_match", active_matches=list(_mm._active_matches.keys()))
             await interaction.response.edit_message(content=self.not_found_msg, view=None)
             return
 
