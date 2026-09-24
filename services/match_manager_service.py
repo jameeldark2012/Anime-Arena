@@ -31,52 +31,21 @@ class MatchState:
         self.player2_hp = 4
         self.current_turn = 1
 
-        # ---------- turn ownership --------------------------------------------
-        # Only one player acts at a time. Challenger (player1) goes first.
         self.current_player_id: int = player1_id
-
-        # ---------- current-turn action list ----------------------------------
-        # Ordered list of actions the active player has submitted this turn.
-        # Each entry: {"action_type": "attack"|"defense"|"custom",
-        #              "tier": str | None, "attachment_url": str, "filename": str}
         self.current_turn_actions: list[dict] = []
-
-        # ---------- pending attack --------------------------------------------
-        # The unresolved attack carried from the previous player's turn.
-        # None means no incoming attack to respond to.
-        # Set to the attack dict when the attacker ends their turn.
-        # Cleared once it resolves (first action of the defender's turn).
         self.pending_attack: dict | None = None
-
-        # ---------- pending attack owner --------------------------------------
-        # Who owns the pending attack (for display purposes).
         self.pending_attacker_id: int | None = None
-
-        # ---------- damage resolved this turn ---------------------------------
-        # Populated at the start of a turn if there was a pending attack.
-        # Holds the result so the embed can describe what happened.
         self.last_resolution: dict | None = None
-
-        # In-memory video cache {player_id: [bytes, ...]}
         self.video_cache: dict[int, list[bytes]] = {}
 
-        self.status = "active"  # active, finished
+        self.status = "active"
         self.has_objection = False
         self.winner_id: int | None = None
         self.loser_id: int | None = None
-
-        # ---------- referee controls ------------------------------------------
-        # When True, all combat actions are blocked until a referee resumes.
         self.is_paused: bool = False
-
-        # Ordered list of state snapshots taken at the end of each completed turn.
-        # Each snapshot is a plain dict capturing the full restorable game state.
-        # Index 0 = state before turn 1 (match start), index N = after turn N.
         self.state_history: list[dict] = []
-        # Immediately snapshot the initial state (turn 0).
         self._snapshot()
 
-    # ------------------------------------------------------------------
     def _snapshot(self) -> None:
         """Capture the current restorable game state and push it to history."""
         import copy
@@ -103,9 +72,7 @@ class MatchState:
         self.pending_attacker_id = snap["pending_attacker_id"]
         self.current_turn = snap["turn"]
         self.status = snap["status"]
-        # Trim history forward of the restored point.
         self.state_history = self.state_history[:index + 1]
-        # Clear any in-progress turn state.
         self.current_turn_actions = []
         self.last_resolution = None
         self.is_paused = False
@@ -116,7 +83,6 @@ class MatchState:
 class MatchManagerService:
     def __init__(self) -> None:
         self._active_matches: dict[int, MatchState] = {}
-        # Tracks active match pairs as frozensets so {A, B} == {B, A}.
         self._active_pairs: set[frozenset] = set()
 
     async def create_match_post(
@@ -129,7 +95,6 @@ class MatchManagerService:
         if not settings.MATCHES_FORUM_CHANNEL_ID:
             return None, "MATCHES_FORUM_CHANNEL_ID is not configured in environment settings."
 
-        # Reject only if this exact pair already has an active match together.
         pair = frozenset({player1_id, player2_id})
         if pair in self._active_pairs:
             return None, "These two players already have an active match against each other!"
@@ -144,7 +109,6 @@ class MatchManagerService:
         if not p1_char or not p2_char:
             return None, "Both players must have a claimed character to start a match."
 
-        # Ensure members are fetched or fallback if needed
         m1 = guild.get_member(player1_id) or await guild.fetch_member(player1_id)
         m2 = guild.get_member(player2_id) or await guild.fetch_member(player2_id)
 
@@ -152,7 +116,7 @@ class MatchManagerService:
         p2_name = m2.display_name if m2 else str(player2_id)
 
         thread_name = f"Match: {p1_name} ({p1_char.character_name}) vs {p2_name} ({p2_char.character_name})"
-        
+
         initial_message = (
             f"⚔️ **ANIME ARENA MATCH STARTED** ⚔️\n"
             f"<@{player1_id}> (**{p1_char.character_name}**) vs <@{player2_id}> (**{p2_char.character_name}**)\n\n"
@@ -198,32 +162,19 @@ class MatchManagerService:
         return self._active_matches.get(channel_id)
 
     def get_match_for_interaction(self, interaction: discord.Interaction) -> MatchState | None:
-        """Look up a match by interaction, handling the Discord forum thread bug.
-
-        Discord has a client-side bug where slash commands inside forum threads
-        sometimes report the parent forum channel ID instead of the thread ID.
-        This method checks both the reported channel_id and, if that fails,
-        tries the actual thread ID by inspecting the channel object.
-        """
-        # Primary lookup — works when Discord reports correctly.
+        """Look up a match by interaction, handling the Discord forum thread bug."""
         match = self._active_matches.get(interaction.channel_id)
         if match:
             return match
 
-        # Fallback: if the channel object is a Thread, try its ID directly.
-        # This covers the case where Discord sent parent_id instead of thread.id.
         channel = interaction.channel
         if isinstance(channel, discord.Thread) and channel.id != interaction.channel_id:
             match = self._active_matches.get(channel.id)
             if match:
                 return match
 
-        # Second fallback: if we got the parent forum channel ID, search all
-        # active matches for one whose thread lives under this parent.
-        # Needed when interaction.channel is the ForumChannel, not the thread.
         if isinstance(channel, discord.ForumChannel):
             for m in self._active_matches.values():
-                # The match_id IS the thread ID — check if it's a child of this forum.
                 thread = channel.get_thread(m.match_id)
                 if thread is not None:
                     return m
@@ -238,3 +189,5 @@ class MatchManagerService:
 
 
 match_manager = MatchManagerService()
+
+__all__ = ["MatchState", "MatchManagerService", "match_manager"]

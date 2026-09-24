@@ -62,6 +62,16 @@ def _hp_bar(hp: int, max_hp: int = 4) -> str:
     return f"{'❤️' * filled}{'🖤' * (max_hp - filled)} ({hp}/{max_hp})"
 
 
+def _describe_player(match_state: MatchState, player_id: int) -> str:
+    """Format a player for referee messages, using the boss display name when relevant."""
+    from boss.boss_config import BOSS_PLAYER_ID
+    from boss.boss_state import BossState as _BossState
+
+    if isinstance(match_state, _BossState) and player_id == BOSS_PLAYER_ID:
+        return f"**{match_state.boss_config.display_name}** (Boss)"
+    return f"<@{player_id}>"
+
+
 def _get_max_hp(match_state, player_id: int) -> int:
     """Return the starting HP for a player, derived from snapshot 0."""
     from boss.boss_state import BossState as _BossState
@@ -99,7 +109,7 @@ class RefereeCog(commands.Cog):
 
         pending_atk = match_state.pending_attack
         pending_str = (
-            f"**{pending_atk['tier']}** from <@{match_state.pending_attacker_id}>"
+            f"**{pending_atk['tier']}** from {_describe_player(match_state, match_state.pending_attacker_id)}"
             if pending_atk
             else "None"
         )
@@ -131,14 +141,14 @@ class RefereeCog(commands.Cog):
         embed.add_field(
             name="HP",
             value=(
-                f"<@{match_state.player1_id}>: {_hp_bar(match_state.player1_hp, _get_max_hp(match_state, match_state.player1_id))}\n"
-                f"<@{match_state.player2_id}>: {_hp_bar(match_state.player2_hp, _get_max_hp(match_state, match_state.player2_id))}"
+                f"{_describe_player(match_state, match_state.player1_id)}: {_hp_bar(match_state.player1_hp, _get_max_hp(match_state, match_state.player1_id))}\n"
+                f"{_describe_player(match_state, match_state.player2_id)}: {_hp_bar(match_state.player2_hp, _get_max_hp(match_state, match_state.player2_id))}"
             ),
             inline=False,
         )
         embed.add_field(
             name="Active Player",
-            value=f"<@{match_state.current_player_id}>",
+            value=_describe_player(match_state, match_state.current_player_id),
             inline=True,
         )
         embed.add_field(
@@ -306,7 +316,7 @@ class RefereeCog(commands.Cog):
 
         await interaction.response.send_message(
             f"▶️ **Match resumed by referee <@{interaction.user.id}>.**\n"
-            f"<@{match_state.current_player_id}> — it's your turn!"
+            f"{_describe_player(match_state, match_state.current_player_id)} — it's your turn!"
         )
 
     # ── /ref_rollback ─────────────────────────────────────────────────────────
@@ -348,9 +358,9 @@ class RefereeCog(commands.Cog):
         await interaction.response.send_message(
             f"⏪ **Referee rolled back match to snapshot {snapshot_index}** "
             f"(Turn {match_state.current_turn}).\n"
-            f"HP restored — <@{match_state.player1_id}>: **{match_state.player1_hp}** HP | "
-            f"<@{match_state.player2_id}>: **{match_state.player2_hp}** HP.\n"
-            f"▶️ <@{match_state.current_player_id}> — it's your turn!"
+            f"HP restored — {_describe_player(match_state, match_state.player1_id)}: **{match_state.player1_hp}** HP | "
+            f"{_describe_player(match_state, match_state.player2_id)}: **{match_state.player2_hp}** HP.\n"
+            f"▶️ {_describe_player(match_state, match_state.current_player_id)} — it's your turn!"
         )
 
         # ── If this is a boss fight and the rollback landed on the boss's turn,

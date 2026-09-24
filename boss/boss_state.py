@@ -40,6 +40,9 @@ class BossState(MatchState):
         )
 
         # Override the boss's HP with whatever the config declares.
+        # IMPORTANT: do this before the initial snapshot is taken. The base
+        # MatchState constructor captures the starting state immediately, so
+        # the boss config must be applied before we re-snapshot the true HP.
         self.player2_hp = config.hp
 
         # Carry the full config for use by boss_ai.
@@ -48,6 +51,11 @@ class BossState(MatchState):
         # Convenience flag — read by boss_ai to decide whether to defend.
         # Stored here so each BossState instance is self-contained.
         self.boss_never_defends: bool = config.never_defends
+
+        # Reset the baseline turn snapshot so the saved history reflects the
+        # real boss HP rather than the default 4 HP set by MatchState.__init__.
+        self.state_history = []
+        self._snapshot()
 
         # The script instance lives here so stateful data (used clips, respawn
         # flag, etc.) persists across every turn of the same fight.

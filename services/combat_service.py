@@ -1,12 +1,34 @@
 from __future__ import annotations
 
 import logging
-import aiohttp
-import asyncio
 import discord
 
+from services import media_service
 from services.match_manager_service import MatchState
 from database.models.character import Character
+
+# Backward-compatible aliases for the older module-level monkeypatch shape used
+# by tests and any external callers. The real implementation lives in the media
+# service, but combat_service still exposes the same names to avoid breaking code.
+download_clip = media_service.download_clip
+probe_video_codec = media_service.probe_video_codec
+
+
+def _media_rejection_message(codec: str | None) -> str:
+    """Map the media-layer validation result to the Discord rejection text."""
+    if codec == "unsupported_extension":
+        return (
+            "❌ Unsupported file type.\n"
+            "Please upload an **MP4 encoded in H.264** — this is the only format guaranteed to play on all devices and Discord mobile.\n"
+            "If your clip doesn't play for others, re-export it as **H.264 MP4** using HandBrake (free) or your video editor."
+        )
+    if codec is not None:
+        return (
+            f"❌ Your clip is encoded as **{codec.upper()}** which doesn't play on all devices.\n"
+            f"Please re-export it as **H.264 MP4** and resubmit.\n"
+            f"HandBrake (free) can convert it: https://handbrake.fr"
+        )
+    return ""
 
 logger = logging.getLogger(__name__)
 
@@ -121,46 +143,6 @@ def _resolve_pending_attack(
     }
 
 
-async def _download(url: str) -> bytes | None:
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url) as resp:
-                if resp.status == 200:
-                    return await resp.read()
-    except Exception:
-        logger.exception("Failed to download attachment: %s", url)
-    return None
-
-
-def _probe_video_codec(data: bytes) -> str | None:
-    """Probe video codec from raw bytes via a temp file. Returns codec name or None."""
-    import subprocess, json as _json, tempfile, os
-    try:
-        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
-            tmp.write(data)
-            tmp_path = tmp.name
-        try:
-            result = subprocess.run(
-                [
-                    "ffprobe", "-v", "quiet",
-                    "-print_format", "json",
-                    "-show_streams",
-                    tmp_path,
-                ],
-                capture_output=True,
-                timeout=10,
-            )
-            streams = _json.loads(result.stdout).get("streams", [])
-            for s in streams:
-                if s.get("codec_type") == "video":
-                    return s.get("codec_name")
-        finally:
-            os.unlink(tmp_path)
-    except Exception:
-        logger.exception("ffprobe check failed.")
-    return None
-
-
 # ---------------------------------------------------------------------------
 # Public API — called by the battle cog
 # ---------------------------------------------------------------------------
@@ -194,32 +176,16 @@ async def record_action(
     if match_state.is_paused:
         return False, "⏸️ This match has been paused by a referee. Wait for them to resolve the objection.", None
 
-    if not attachment.filename.lower().endswith(('.mp4', '.mov', '.webm', '.mkv')):
-        return False, (
-            "❌ Unsupported file type.\n"
-            "Please upload an **MP4 encoded in H.264** — this is the only format guaranteed to play on all devices and Discord mobile.\n"
-            "If your clip doesn't play for others, re-export it as **H.264 MP4** using HandBrake (free) or your video editor."
-        ), None
-
     # ── Guard: at most one attack per turn ───────────────────────────────────
     if action_type == "attack" and any(
         a["action_type"] == "attack" for a in match_state.current_turn_actions
     ):
         return False, "You can only attack once per turn. You can still add defense or custom actions.", None
 
-    # ── Download and probe codec BEFORE registering anything ─────────────────
-    clip_bytes = await _download(attachment.url)
-    if clip_bytes is not None:
-        # Run ffprobe in a thread so we don't block the event loop.
-        loop = asyncio.get_running_loop()
-        codec = await loop.run_in_executor(None, _probe_video_codec, clip_bytes)
-
-        if codec is not None and codec != "h264":
-            return False, (
-                f"❌ Your clip is encoded as **{codec.upper()}** which doesn't play on all devices.\n"
-                f"Please re-export it as **H.264 MP4** and resubmit.\n"
-                f"HandBrake (free) can convert it: https://handbrake.fr"
-            ), None
+    # ── Media validation lives in the media layer; combat only enforces the result. ─
+    clip_bytes, codec = await media_service.validate_h264_clip(attachment.url, filename=attachment.filename)
+    if codec is not None:
+        return False, _media_rejection_message(codec), None
 
     # ── Build the action entry ────────────────────────────────────────────────
     action = {
@@ -367,16 +333,24 @@ async def generate_turn_embed(
     turn_summary: dict,
 ) -> discord.Embed:
     """Build a Discord embed describing the completed turn."""
+    from boss.boss_state import BossState as _BossState
+
     p1 = await Character.get_or_none(claimed_by_id=match_state.player1_id)
     p2 = await Character.get_or_none(claimed_by_id=match_state.player2_id)
     p1_name = p1.character_name if p1 else "Player 1"
     p2_name = p2.character_name if p2 else "Player 2"
+
+    if isinstance(match_state, _BossState):
+        p2_name = match_state.boss_config.display_name
 
     acting_id = turn_summary["acting_player_id"]
     actions: list[dict] = turn_summary["actions"]
     resolution: dict | None = turn_summary["resolution"]
     attack_sent: dict | None = turn_summary["attack_sent"]
     winner_id = turn_summary["winner_id"]
+
+    player1_hp = turn_summary["p1_hp"]
+    player2_hp = turn_summary["p2_hp"]
 
     # Embed colour: red if damage dealt, gold if match over, green otherwise.
     damage_dealt = resolution["damage"] > 0 if resolution else False
@@ -433,11 +407,14 @@ async def generate_turn_embed(
         filled = min(hp, max_hp)
         return f"`{'❤️' * filled}{'🖤' * (max_hp - filled)}`  ({hp}/{max_hp})"
 
+    player1_display = f"<@{match_state.player1_id}> ({p1_name})"
+    player2_display = f"**{p2_name}** (Boss)" if isinstance(match_state, _BossState) else f"<@{match_state.player2_id}> ({p2_name})"
+
     embed.add_field(
         name="HP",
         value=(
-            f"<@{match_state.player1_id}> ({p1_name}): {hp_bar(turn_summary['p1_hp'], p1_max_hp)}\n"
-            f"<@{match_state.player2_id}> ({p2_name}): {hp_bar(turn_summary['p2_hp'], p2_max_hp)}"
+            f"{player1_display}: {hp_bar(player1_hp, p1_max_hp)}\n"
+            f"{player2_display}: {hp_bar(player2_hp, p2_max_hp)}"
         ),
         inline=False,
     )
