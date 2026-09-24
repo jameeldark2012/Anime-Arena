@@ -33,6 +33,7 @@ If you were ever part of the old-school Facebook anime battle groups, this is th
 ### Getting started
 | Command | Description |
 |---|---|
+| `/help` | Show the list of available bot commands and usage |
 | `/reserve` | Reserve a character — search by anime, then by character name |
 | `/my_character` | Check your currently reserved character |
 | `/players` | See all players and their reserved characters |
