@@ -75,29 +75,91 @@ If you were ever part of the old-school Facebook anime battle groups, this is th
 ```
 Anime Arena/
 ├── app/
-│   ├── cogs/          # Discord commands and match/boss/referee logic
-│   ├── bot.py         # Bot bootstrap and extension loader
-│   └── main.py        # Entry point for the application
-├── boss/              # Boss system, configs, state, AI, and scripted behaviors
-├── core/              # Shared config values and environment setup
+│   ├── cogs/
+│   │   ├── battle.py
+│   │   ├── boss_battle.py
+│   │   ├── general.py
+│   │   ├── matchmaking.py
+│   │   ├── players.py
+│   │   ├── referee.py
+│   │   ├── reserve.py
+│   │   └── utils.py
+│   ├── bot.py
+│   └── main.py
+├── boss/
+│   ├── scripts/
+│   │   └── zeke.py
+│   ├── __init__.py
+│   ├── boss_ai.py
+│   ├── boss_config.py
+│   ├── boss_manager.py
+│   ├── boss_script.py
+│   └── boss_state.py
+├── core/
+│   ├── __init__.py
+│   └── config.py
 ├── database/
-│   ├── models/        # Anime, Player, Character models
-│   └── database.py    # DB setup and session handling
-├── services/          # Game logic services and match helpers
+│   ├── models/
+│   │   ├── anime.py
+│   │   ├── character.py
+│   │   └── player.py
+│   ├── __init__.py
+│   └── database.py
+├── services/
+│   ├── combat/
+│   │   └── combat_service.py
+│   ├── content/
+│   │   └── anime_service.py
+│   ├── match/
+│   │   └── match_manager_service.py
+│   ├── media/
+│   │   └── media_service.py
+│   ├── player/
+│   │   ├── character_service.py
+│   │   ├── player_service.py
+│   │   ├── reserve.py
+│   │   └── __init__.py
+│   ├── __init__.py
+│   └── ...
 ├── scripts/
-│   ├── batch_nvenc_burn.py   # Batch subtitle burning with NVENC
-│   ├── convert_to_h264.py    # Recursive H.264 conversion for Discord-safe files
-│   ├── db_tables_creation.py # DB table generation
+│   ├── data/
+│   │   ├── batch_insert_data_to_db.py
+│   │   ├── grab_characters.py
+│   │   └── ...
+│   ├── db/
+│   │   ├── db_tables_creation.py
+│   │   └── ...
+│   ├── media/
+│   │   ├── batch_nvenc_burn.py
+│   │   ├── convert_to_h264.py
+│   │   └── ...
+│   ├── ops/
+│   │   ├── seed_boss.py
+│   │   └── ...
+│   ├── __init__.py
+│   └── ...
+├── tests/
+│   ├── app/
+│   ├── boss/
+│   ├── scripts/
+│   ├── services/
+│   ├── conftest.py
 │   └── ...
 ├── assets/
-│   └── boss_clips/    # Boss attack/defense/intros media assets
-├── data/              # CSV datasets for anime/character data
-├── Video demonstrations/ # Example video records and clips
-├── config.env         # Local environment config
-├── requirements.txt    # Python requirements
-├── README.md          # Project overview and usage notes
+│   └── boss_clips/
+├── data/
+│   ├── anime.csv
+│   ├── anime_cleaned.csv
+│   ├── characters.csv
+│   └── characters_cleaned.csv
+├── Video demonstrations/
+├── config.env
+├── requirements.txt
+├── README.md
 └── .gitignore
 ```
+
+The project is intentionally grouped by responsibility now: app-facing Discord code, boss logic, service domains, scripts by operational area, and tests by feature area.
 
 ---
 
