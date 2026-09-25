@@ -1,3 +1,4 @@
+from .ai import get_client as get_ai_client
 from .content import anime_service
 from .content.anime_service import search_anime_by_title
 from .combat import combat_service
@@ -9,6 +10,7 @@ from .player.player_service import get_all_players_with_characters, get_current_
 from .player.reserve import reserve_character
 
 __all__ = [
+    "get_ai_client",
     "anime_service",
     "combat_service",
     "match_manager_service",

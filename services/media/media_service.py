@@ -4,8 +4,10 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 import subprocess
 import tempfile
+from pathlib import Path
 
 import aiohttp
 
@@ -69,6 +71,60 @@ async def validate_clip_upload(url: str) -> tuple[bytes | None, str | None]:
 def is_supported_video_extension(filename: str) -> bool:
     """Return True for the video extensions we support for battle uploads."""
     return filename.lower().endswith(('.mp4', '.mov', '.webm', '.mkv'))
+
+
+def probe_video_duration(video_path: Path) -> float:
+    """Return the duration of a video file in seconds using ffprobe, or 0.0 on failure."""
+    ffprobe = shutil.which("ffprobe")
+    if not ffprobe:
+        return 0.0
+    cmd = [
+        ffprobe, "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        str(video_path),
+    ]
+    try:
+        completed = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    except OSError:
+        return 0.0
+    if completed.returncode != 0:
+        return 0.0
+    output = completed.stdout.strip()
+    if not output:
+        return 0.0
+    try:
+        return float(output.splitlines()[0])
+    except ValueError:
+        return 0.0
+
+
+SUPPORTED_VIDEO_EXTENSIONS = {
+    ".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v", ".flv", ".wmv",
+}
+
+
+def collect_videos(root: str | Path) -> list[Path]:
+    """Recursively collect all supported video files under root, sorted by path."""
+    base = Path(root).expanduser().resolve()
+    if not base.exists():
+        raise FileNotFoundError(f"video root does not exist: {base}")
+    return [
+        path
+        for path in sorted(base.rglob("*"))
+        if path.is_file() and path.suffix.lower() in SUPPORTED_VIDEO_EXTENSIONS
+    ]
+
+
+def estimate_video_tokens(duration_seconds: float) -> int:
+    """Estimate Gemini token cost for a video based on its duration.
+
+    Gemini charges roughly 1200 tokens per second of video.
+    Returns a minimum of 4000 tokens for very short or unknown-duration clips.
+    """
+    if duration_seconds <= 0:
+        return 4000
+    return max(4000, int(duration_seconds * 1200))
 
 
 async def validate_h264_clip(url: str, *, filename: str | None = None) -> tuple[bytes | None, str | None]:

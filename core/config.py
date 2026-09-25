@@ -20,6 +20,8 @@ class Settings:
 
     MATCHES_FORUM_CHANNEL_ID: int
     REFEREE_ROLE_ID: int
+    GOOGLE_API_KEY: str | None
+    GOOGLE_MODEL: str | None
     def __init__(self) -> None:
         self.DISCORD_BOT_TOKEN = self._required("DISCORD_BOT_TOKEN")
         self.DATABASE_URL = self._required("DATABASE_URL")
@@ -27,6 +29,13 @@ class Settings:
         self.REFEREE_ROLE_ID = self._int("REFEREE_ROLE_ID", 0)
         self.GUILD_ID = self._int("GUILD_ID", 0)
         self.DEBUG = self._bool("DEBUG", False)
+        self.GOOGLE_API_KEY = self._optional("GOOGLE_API_KEY")
+        self.GOOGLE_MODEL = self._optional("GOOGLE_MODEL")
+
+    @staticmethod
+    def _optional(name: str) -> str | None:
+        value = os.getenv(name, "").strip()
+        return value or None
 
     @staticmethod
     def _required(name: str) -> str:
