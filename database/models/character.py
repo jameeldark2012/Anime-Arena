@@ -8,6 +8,7 @@ class Character(Model):
     character_name = fields.TextField()
     image_url = fields.TextField(null=True)
     claimed_by = fields.OneToOneField("models.Player", related_name="claimed_character", null=True)
+    profile = fields.TextField(null=True)
 
     class Meta:
         table = "character"

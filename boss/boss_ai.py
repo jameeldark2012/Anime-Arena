@@ -10,6 +10,7 @@ import discord
 
 from boss.boss_config import BOSS_PLAYER_ID, TIER_FOLDER
 from boss.boss_state import BossState
+from core.debug import debug_event
 from services.combat.combat_service import end_turn
 
 logger = logging.getLogger(__name__)
@@ -61,21 +62,36 @@ async def _post_clip(
         logger.warning("Failed to post clip '%s': %s", filename, e)
 
 
-def _inject_attack(boss_state: BossState, tier: str, attack_clip: tuple[bytes, str] | None) -> None:
-    """Append an attack action to boss_state and cache the clip bytes."""
-    filename = attack_clip[1] if attack_clip else f"boss_attack_{tier.lower()}.mp4"
+def _inject_action(
+    boss_state: BossState,
+    action_type: str,
+    tier: str,
+    action_clip: tuple[bytes, str] | None,
+) -> None:
+    """Append a boss action, resolving an incoming attack on its first action."""
+    action = {"action_type": action_type, "tier": tier}
+    if not boss_state.current_turn_actions and boss_state.pending_attack is not None:
+        from services.combat.combat_service import _resolve_pending_attack
+        boss_state.last_resolution = _resolve_pending_attack(boss_state, action)
+
+    filename = action_clip[1] if action_clip else f"boss_{action_type}_{tier.lower()}.mp4"
     boss_state.current_turn_actions.append({
-        "action_type": "attack",
+        "action_type": action_type,
         "tier": tier,
         "attachment_url": None,
         "filename": filename,
     })
-    if attack_clip:
+    if action_clip:
         boss_state.video_cache.setdefault(BOSS_PLAYER_ID, []).append({
-            "bytes": attack_clip[0],
-            "label": "ATTACK",
+            "bytes": action_clip[0],
+            "label": action_type.upper(),
             "filename": filename,
         })
+
+
+def _inject_attack(boss_state: BossState, tier: str, attack_clip: tuple[bytes, str] | None) -> None:
+    """Append an attack action to boss_state and cache the clip bytes."""
+    _inject_action(boss_state, "attack", tier, attack_clip)
 
 
 # ---------------------------------------------------------------------------
@@ -88,7 +104,14 @@ async def run_boss_intro(
 ) -> None:
     """Post the boss's intro clip (if any). Called once when the fight starts."""
     script = boss_state.script
+    debug_event("boss_intro_execution_started", match_id=boss_state.match_id, boss=boss_state.boss_config.slug)
+    await script.prepare_intro(boss_state)
     intro_path = script.on_match_start(boss_state)
+    debug_event(
+        "boss_intro_clip_selected",
+        match_id=boss_state.match_id,
+        clip=str(intro_path) if intro_path else None,
+    )
     if intro_path:
         clip = await _read_clip(intro_path)
         await _post_clip(
@@ -110,6 +133,15 @@ async def _handle_post_turn(
 ) -> dict:
     config = boss_state.boss_config
     script = boss_state.script
+
+    debug_event(
+        "boss_turn_execution_started",
+        match_id=boss_state.match_id,
+        turn=boss_state.current_turn,
+        boss=config.slug,
+        player1_hp=boss_state.player1_hp,
+        boss_hp=boss_state.boss_hp,
+    )
 
     # Post-attack RP clip.
     if post_clip_path:
@@ -168,26 +200,75 @@ async def run_boss_turn(
 
     from services.combat.combat_service import generate_turn_embed
 
+    # Allow the script to do any async prep (e.g. AI API call) before deciding.
+    await script.prepare_turn(boss_state)
+
+    turn_intro = script.take_turn_intro(boss_state)
+    if turn_intro:
+        await _post_clip(channel, f"⚔️ **{config.display_name}** appears...", await _read_clip(turn_intro))
+
     # =========================================================================
     # SCRIPTED PATH
     # =========================================================================
     if script.uses_plan_turn():
-        pre_clip_path, tier, attack_clip_path, post_clip_path = script.plan_turn(boss_state)
-
-        # Pre-attack RP clip.
-        if pre_clip_path:
-            await _post_clip(channel, f"*{config.display_name}...*", await _read_clip(pre_clip_path))
-
-        # Resolve attack clip.
-        if attack_clip_path:
-            attack_clip = await _read_clip(attack_clip_path)
+        action_plan = script.plan_actions(boss_state)
+        if action_plan is not None:
+            debug_event(
+                "boss_action_plan_selected",
+                match_id=boss_state.match_id,
+                turn=boss_state.current_turn,
+                actions=[
+                    {
+                        "action_type": action["action_type"],
+                        "tier": action["tier"],
+                        "clip": str(action["path"]),
+                    }
+                    for action in action_plan
+                ],
+            )
+            tier = next(
+                (action["tier"] for action in action_plan if action["action_type"] == "attack"),
+                "Normal",
+            )
+            post_clip_path = None
+            for planned_action in action_plan:
+                action_clip = await _read_clip(planned_action["path"])
+                _inject_action(
+                    boss_state,
+                    planned_action["action_type"],
+                    planned_action["tier"],
+                    action_clip,
+                )
         else:
-            attack_clip = await _pick_random_clip_for_tier(boss_state, tier)
-
-        _inject_attack(boss_state, tier, attack_clip)
+            pre_clip_path, tier, attack_clip_path, post_clip_path = script.plan_turn(boss_state)
+            debug_event(
+                "boss_plan_turn_selected",
+                match_id=boss_state.match_id,
+                turn=boss_state.current_turn,
+                pre_clip=str(pre_clip_path) if pre_clip_path else None,
+                tier=tier,
+                attack_clip=str(attack_clip_path) if attack_clip_path else None,
+                post_clip=str(post_clip_path) if post_clip_path else None,
+            )
+            if pre_clip_path:
+                await _post_clip(channel, f"*{config.display_name}...*", await _read_clip(pre_clip_path))
+            if attack_clip_path:
+                attack_clip = await _read_clip(attack_clip_path)
+            else:
+                attack_clip = await _pick_random_clip_for_tier(boss_state, tier)
+            _inject_attack(boss_state, tier, attack_clip)
 
         # End turn via combat engine.
         success, message, turn_summary = await end_turn(boss_state, BOSS_PLAYER_ID)
+        debug_event(
+            "boss_turn_resolved",
+            match_id=boss_state.match_id,
+            turn=boss_state.current_turn,
+            success=success,
+            message=message,
+            turn_summary=turn_summary,
+            current_turn_actions=boss_state.current_turn_actions,
+        )
         if not success:
             logger.error("Boss end_turn failed: %s", message)
             return None

@@ -33,6 +33,8 @@ class MatchState:
 
         self.current_player_id: int = player1_id
         self.current_turn_actions: list[dict] = []
+        self.last_completed_turn_actions: list[dict] = []
+        self.last_completed_turn_number: int | None = None
         self.pending_attack: dict | None = None
         self.pending_attacker_id: int | None = None
         self.last_resolution: dict | None = None
@@ -163,13 +165,21 @@ class MatchManagerService:
 
     def get_match_for_interaction(self, interaction: discord.Interaction) -> MatchState | None:
         """Look up a match by interaction, handling the Discord forum thread bug."""
-        match = self._active_matches.get(interaction.channel_id)
-        if match:
-            return match
-
         channel = interaction.channel
-        if isinstance(channel, discord.Thread) and channel.id != interaction.channel_id:
-            match = self._active_matches.get(channel.id)
+        candidate_ids: set[int] = set()
+
+        channel_id = getattr(interaction, "channel_id", None)
+        if channel_id is not None:
+            candidate_ids.add(channel_id)
+
+        if channel is not None:
+            if getattr(channel, "id", None) is not None:
+                candidate_ids.add(channel.id)
+            if getattr(channel, "parent_id", None) is not None:
+                candidate_ids.add(channel.parent_id)
+
+        for candidate_id in candidate_ids:
+            match = self._active_matches.get(candidate_id)
             if match:
                 return match
 

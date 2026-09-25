@@ -38,8 +38,12 @@ class BattleCog(commands.Cog):
         self, interaction: discord.Interaction, handler_name: str
     ) -> bool:
         """Route normal battle commands to their boss equivalents in boss threads."""
-        if not boss_manager.get_fight(interaction.channel_id):
-            return False
+        boss_fight = boss_manager.get_fight_for_interaction(interaction)
+        if boss_fight is None:
+            player_fight = boss_manager.get_fight_for_player(interaction.user.id)
+            if player_fight is None:
+                return False
+            boss_fight = player_fight
 
         boss_cog = self.bot.get_cog("BossBattleCog")
         handler = getattr(boss_cog, handler_name, None) if boss_cog else None

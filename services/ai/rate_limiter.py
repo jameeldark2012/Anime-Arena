@@ -8,6 +8,11 @@ DEFAULT_TPM_LIMIT = 65000
 DEFAULT_SAFETY_MARGIN = 0.8
 
 
+def estimate_text_tokens(text: str) -> int:
+    """Estimate text token count for rate limiting and debug logging."""
+    return max(1, len(text) // 4)
+
+
 class RateLimiter:
     """
     Token-per-minute and request-per-minute rate limiter for AI API calls.

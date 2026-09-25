@@ -96,6 +96,7 @@ class BossConfig:
 # Run scripts/seed_boss.py once to create the Player(-1) row and link the character.
 
 from boss.scripts.zeke import ZekeScript
+from boss.scripts.clare import ClareBossScript
 
 BOSSES: dict[str, BossConfig] = {
     "zeke": BossConfig(
@@ -111,5 +112,19 @@ BOSSES: dict[str, BossConfig] = {
             "Over-Absolute": 1,
         },
         script_class=ZekeScript,
+    ),
+    "clare": BossConfig(
+        slug="clare",
+        display_name="Clare",
+        hp=4,
+        character_id=2188,
+        never_defends=False,  # Clare actively defends using the AI
+        attack_weights={
+            "Normal": 3,
+            "Medium": 2,
+            "Absolute": 0,
+            "Over-Absolute": 0,
+        },
+        script_class=ClareBossScript,
     ),
 }

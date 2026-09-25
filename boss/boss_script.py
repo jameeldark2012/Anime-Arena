@@ -54,9 +54,26 @@ class BossScript:
         """
         return None
 
+    async def prepare_intro(self, state: BossState) -> None:
+        """Optional async hook for preparing an intro before it is posted."""
+        return
+
+    def take_turn_intro(self, state: BossState) -> Path | None:
+        """Return an intro selected as part of a boss turn, if any."""
+        return None
+
     # ------------------------------------------------------------------
     # Scripted turn plan (preferred over independent hooks)
     # ------------------------------------------------------------------
+
+    async def prepare_turn(self, state: BossState) -> None:
+        """Optional async hook called before plan_turn or the hook-based path.
+
+        Use this in subclasses that need to do async work (e.g. an AI API call)
+        before deciding what to do this turn. Store results on self or state.
+        Default: no-op.
+        """
+        return
 
     def plan_turn(self, state: BossState) -> tuple[Path | None, str, Path | None, Path | None]:
         """Return a complete turn plan as (pre_clip, tier, attack_clip, post_clip).
@@ -74,6 +91,10 @@ class BossScript:
         existing probabilistic hook system so base-class bosses still work.
         """
         return None, self.pick_tier(state), None, None
+
+    def plan_actions(self, state: BossState) -> list[dict] | None:
+        """Return ordered multi-action plans when a script supports them."""
+        return None
 
     def uses_plan_turn(self) -> bool:
         """Return True if this script overrides plan_turn.

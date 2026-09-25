@@ -120,6 +120,38 @@ class BossManagerService:
         """Return the BossState for the given thread, or None."""
         return self._active_fights.get(thread_id)
 
+    def get_fight_for_interaction(self, interaction: discord.Interaction) -> BossState | None:
+        """Resolve a boss fight from the current interaction channel or thread."""
+        channel = interaction.channel
+        candidate_ids: set[int] = set()
+
+        channel_id = getattr(interaction, "channel_id", None)
+        if channel_id is not None:
+            candidate_ids.add(channel_id)
+
+        if channel is not None:
+            if getattr(channel, "id", None) is not None:
+                candidate_ids.add(channel.id)
+            if getattr(channel, "parent_id", None) is not None:
+                candidate_ids.add(channel.parent_id)
+
+        for candidate_id in candidate_ids:
+            fight = self.get_fight(candidate_id)
+            if fight:
+                return fight
+
+        if isinstance(channel, discord.ForumChannel):
+            for boss_state in self._active_fights.values():
+                thread = channel.get_thread(boss_state.match_id)
+                if thread is not None:
+                    return boss_state
+
+        player_fight = self.get_fight_for_player(getattr(interaction, "user", None).id if getattr(interaction, "user", None) else None)
+        if player_fight is not None:
+            return player_fight
+
+        return None
+
     def remove_fight(self, thread_id: int) -> BossState | None:
         """Remove and return the BossState for the given thread."""
         boss_state = self._active_fights.pop(thread_id, None)

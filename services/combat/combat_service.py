@@ -312,6 +312,10 @@ async def end_turn(
         "p2_id": match_state.player2_id,
     }
 
+    # ── Preserve the completed actions for runtime AI analysis. ──────────────
+    match_state.last_completed_turn_actions = list(match_state.current_turn_actions)
+    match_state.last_completed_turn_number = match_state.current_turn
+
     # ── Reset turn state and pass to opponent ─────────────────────────────────
     match_state.current_turn_actions = []
     match_state.last_resolution = None

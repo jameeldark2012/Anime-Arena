@@ -79,8 +79,8 @@ class GeminiClient(LLMClient):
 
         response = litellm.completion(
             model=self.model,
+            custom_llm_provider="gemini",
             messages=[{"role": "user", "content": content}],
-            temperature=self.temperature,
             max_tokens=self.max_output_tokens,
             api_key=self.api_key,
         )
@@ -104,6 +104,7 @@ class GeminiClient(LLMClient):
             uploaded = litellm.create_file(
                 file=fh,
                 purpose="user_data",
+                custom_llm_provider="gemini",
                 extra_headers={"custom-llm-provider": "gemini"},
                 api_key=self.api_key,
             )
