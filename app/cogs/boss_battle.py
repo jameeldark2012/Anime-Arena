@@ -226,6 +226,49 @@ class BossBattleCog(commands.Cog):
                 )
             )
 
+    async def boss_talk(self, interaction: discord.Interaction) -> None:
+        await self.submit_talk(interaction)
+
+    async def submit_talk(self, interaction: discord.Interaction) -> None:
+        """Handle /talk command in boss battles."""
+        boss_state, err = self._validate(interaction)
+        if err:
+            await interaction.response.send_message(err, ephemeral=True)
+            return
+
+        turn_err = self._guard_player_turn(interaction, boss_state)
+        if turn_err:
+            await interaction.response.send_message(turn_err, ephemeral=True)
+            return
+
+        # Create a modal for text input
+        class TalkModal(discord.ui.Modal, title="Add Dialogue"):
+            dialogue_text = discord.ui.TextInput(
+                label="What do you say?",
+                placeholder="Enter your dialogue/taunt here...",
+                style=discord.TextStyle.paragraph,
+                max_length=500,
+                required=True
+            )
+
+            async def on_submit(self, modal_interaction: discord.Interaction):
+                await modal_interaction.response.defer(ephemeral=True)
+                
+                # Record the talk action using the combat service
+                from services.combat.combat_service import record_talk_action
+                success, reply = await record_talk_action(
+                    match_state=boss_state,
+                    player_id=modal_interaction.user.id,
+                    dialogue_text=str(self.dialogue_text)
+                )
+                
+                if success:
+                    await modal_interaction.followup.send(f"✅ **Talk action added:** \"{self.dialogue_text[:50]}{'...' if len(self.dialogue_text) > 50 else ''}\"", ephemeral=True)
+                else:
+                    await modal_interaction.followup.send(f"❌ {reply}", ephemeral=True)
+
+        await interaction.response.send_modal(TalkModal())
+
     async def boss_end_turn(self, interaction: discord.Interaction) -> None:
         await self.finish_player_turn(interaction)
 

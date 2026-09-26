@@ -11,6 +11,7 @@ from core.config import settings
 from core.debug import debug_event
 from services.combat.combat_service import (
     record_action,
+    record_talk_action,
     end_turn,
     generate_turn_embed,
     get_active_player,
@@ -211,6 +212,52 @@ class BattleCog(commands.Cog):
                     f"⬆️ Send your corrected clip to try again. You have {CLIP_UPLOAD_TIMEOUT}s."
                 )
             )
+
+    @app_commands.command(
+        name="talk",
+        description="Add dialogue/text to your turn. Shown when you end your turn.",
+    )
+    async def talk(self, interaction: discord.Interaction) -> None:
+        """Add text dialogue to your turn."""
+        if await self._delegate_boss_command(interaction, "submit_talk"):
+            return
+        
+        match_state, err = self._validate(interaction)
+        if err:
+            await interaction.response.send_message(err, ephemeral=True)
+            return
+
+        turn_err = self._guard_active_player(interaction, match_state)
+        if turn_err:
+            await interaction.response.send_message(turn_err, ephemeral=True)
+            return
+
+        # Create a modal for text input
+        class TalkModal(discord.ui.Modal, title="Add Dialogue"):
+            dialogue_text = discord.ui.TextInput(
+                label="What do you say?",
+                placeholder="Enter your dialogue/taunt here...",
+                style=discord.TextStyle.paragraph,
+                max_length=500,
+                required=True
+            )
+
+            async def on_submit(self, modal_interaction: discord.Interaction):
+                await modal_interaction.response.defer(ephemeral=True)
+                
+                # Record the talk action
+                success, reply = await record_talk_action(
+                    match_state=match_state,
+                    player_id=modal_interaction.user.id,
+                    dialogue_text=str(self.dialogue_text)
+                )
+                
+                if success:
+                    await modal_interaction.followup.send(f"✅ **Talk action added:** \"{self.dialogue_text[:50]}{'...' if len(self.dialogue_text) > 50 else ''}\"", ephemeral=True)
+                else:
+                    await modal_interaction.followup.send(f"❌ {reply}", ephemeral=True)
+
+        await interaction.response.send_modal(TalkModal())
 
     @app_commands.command(
         name="end_turn",

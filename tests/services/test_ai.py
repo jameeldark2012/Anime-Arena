@@ -4,7 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from boss.boss_manager import BossManagerService
-from boss.scripts.clare import ClareBossScript, _build_ai_state_from_boss
+from boss.scripts.clare import ClareBossScript, _build_ai_state_from_boss, _extract_opponent_dialogue
 from services.ai import RateLimiter
 from services.ai.ai_match_state import AIMatchState
 from services.ai.character_rules import CharacterRules
@@ -99,10 +99,10 @@ def test_ai_match_state_tracks_opponent_analysis_and_ai_response_history():
         clip_catalog=ClipCatalog(root=Path("E:/tmp")),
     )
 
+    state.record_opponent_dialogue(1, ["You are too slow."])
     state.record_opponent_analysis(
         turn=1,
         descriptions=["The opponent lunges forward with a rising slash from the left flank."],
-        dialogue_lines=["You are too slow."],
     )
     state.record_ai_response(
         turn=1,
@@ -114,6 +114,20 @@ def test_ai_match_state_tracks_opponent_analysis_and_ai_response_history():
     assert state.latest_opponent_descriptions() == [
         "The opponent lunges forward with a rising slash from the left flank."
     ]
+    assert state.latest_opponent_dialogue() == ["You are too slow."]
+    assert state.turn_context_log[0]["opponent_dialogue"] == ["You are too slow."]
+    assert 'Opponent said: "You are too slow."' in state.turn_history_log[0]
+
+
+def test_extract_opponent_dialogue_reads_talk_actions_only():
+    actions = [
+        {"action_type": "attack", "dialogue": "Not a talk action."},
+        {"action_type": "talk", "dialogue": "  You cannot stop me.  "},
+        {"action_type": "talk", "dialogue": "  "},
+        {"action_type": "talk", "dialogue": None},
+    ]
+
+    assert _extract_opponent_dialogue(actions) == ["You cannot stop me."]
 
 
 def test_build_ai_state_from_boss_initializes_runtime_dialogue_and_history_fields():

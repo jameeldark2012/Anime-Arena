@@ -126,12 +126,28 @@ async def post_turn_result(
     """
     acting_id = turn_summary["acting_player_id"]
     cached: list[dict] = match_state.video_cache.pop(acting_id, [])
-    total = len(cached)
-
-    for i, clip in enumerate(cached, start=1):
+    
+    # Separate video clips from talk/dialogue actions
+    video_clips = [clip for clip in cached if clip.get("bytes") is not None]
+    talk_actions = [clip for clip in cached if clip.get("bytes") is None and clip.get("dialogue")]
+    
+    # Post video clips
+    total_videos = len(video_clips)
+    for i, clip in enumerate(video_clips, start=1):
+        content = f"📹 **Clip {i}/{total_videos}** (<@{acting_id}>)"
+        # Include dialogue if present (for boss actions)
+        if clip.get("dialogue"):
+            content = f"📹 **{clip.get('label', 'Clip')} {i}/{total_videos}** (<@{acting_id}>)\n💬 \"{clip['dialogue']}\""
+        
         await channel.send(
-            content=f"📹 **Clip {i}/{total}** (<@{acting_id}>)",
+            content=content,
             file=discord.File(io.BytesIO(clip["bytes"]), filename=clip["filename"]),
+        )
+    
+    # Post talk actions (text only)
+    for talk in talk_actions:
+        await channel.send(
+            content=f"💬 **<@{acting_id}> says:** \"{talk['dialogue']}\""
         )
 
     embed = await generate_turn_embed_fn(match_state, turn_summary)

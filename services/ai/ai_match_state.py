@@ -151,7 +151,10 @@ class AIMatchState(MatchState):
 
         context = self._upsert_turn_context(turn)
         context["opponent_descriptions"] = descriptions
-        context["opponent_dialogue"] = dialogue_lines or []
+        if dialogue_lines is not None:
+            context["opponent_dialogue"] = dialogue_lines
+        else:
+            context.setdefault("opponent_dialogue", [])
 
     def record_ai_response(
         self,
@@ -178,6 +181,7 @@ class AIMatchState(MatchState):
         context["ai_dialogue"] = dialogue
 
         opponent_descriptions = context.get("opponent_descriptions") or self.latest_opponent_descriptions()
+        opponent_dialogue = context.get("opponent_dialogue") or []
         opponent_summary = ""
         if isinstance(opponent_descriptions, list) and opponent_descriptions:
             opponent_summary = opponent_descriptions[0]
@@ -187,8 +191,16 @@ class AIMatchState(MatchState):
             opponent_summary = "an unseen opponent action"
 
         response_text = ", ".join(normalized_actions) if normalized_actions else "no response"
+        opponent_dialogue_text = (
+            f' Opponent said: "{"; ".join(opponent_dialogue)}".'
+            if isinstance(opponent_dialogue, list) and opponent_dialogue
+            else ""
+        )
         dialogue_text = f' Clare said: "{dialogue}"' if dialogue else ""
-        summary = f"Turn {turn}: Opponent did {opponent_summary}. I responded with {response_text}.{dialogue_text}"
+        summary = (
+            f"Turn {turn}: Opponent did {opponent_summary}.{opponent_dialogue_text} "
+            f"I responded with {response_text}.{dialogue_text}"
+        )
         self.record_turn(summary)
 
     def record_opponent_clips(self, turn: int, descriptions: list[str]) -> None:
@@ -199,6 +211,8 @@ class AIMatchState(MatchState):
         """Store opponent's dialogue/taunts for a given turn."""
         if dialogue_lines:
             self.opponent_dialogue[turn] = dialogue_lines
+            context = self._upsert_turn_context(turn)
+            context["opponent_dialogue"] = dialogue_lines
 
     def latest_opponent_descriptions(self) -> list[str]:
         """Return the opponent's clip descriptions from the most recent turn, or empty list."""

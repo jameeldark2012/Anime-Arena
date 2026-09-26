@@ -151,6 +151,11 @@ class ClareBossScript(BossScript):
             match_id=state.match_id,
             turn=analysis_turn,
         )
+        opponent_dialogue = _extract_opponent_dialogue(
+            getattr(state, "last_completed_turn_actions", [])
+        )
+        if opponent_dialogue:
+            self._ai_state.record_opponent_dialogue(analysis_turn, opponent_dialogue)
 
         try:
             decision = await decide_turn(
@@ -369,6 +374,17 @@ def _build_ai_state_from_boss(state: BossState, rules, catalog) -> "AIMatchState
     ai_state.established_abilities = {}
     ai_state.used_clips = set()
     return ai_state
+
+
+def _extract_opponent_dialogue(actions: list[dict]) -> list[str]:
+    """Return non-empty /talk text from the opponent's completed turn."""
+    return [
+        dialogue.strip()
+        for action in actions
+        if action.get("action_type") == "talk"
+        and isinstance(dialogue := action.get("dialogue"), str)
+        and dialogue.strip()
+    ]
 
 
 def _sync_ai_state_from_boss(ai_state, state: BossState) -> None:

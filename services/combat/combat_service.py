@@ -239,6 +239,67 @@ async def record_action(
     return True, msg, resolution
 
 
+async def record_talk_action(
+    match_state: MatchState,
+    player_id: int,
+    dialogue_text: str,
+) -> tuple[bool, str]:
+    """Submit a talk/dialogue action for the active player.
+
+    Returns (success, message).
+    """
+    # ── Guard: only the active player may act ────────────────────────────────
+    if player_id != match_state.current_player_id:
+        return False, "It's not your turn."
+
+    if match_state.is_paused:
+        return False, "⏸️ This match has been paused by a referee. Wait for them to resolve the objection."
+
+    # ── Build the talk action entry ───────────────────────────────────────────
+    action = {
+        "action_type": "talk",
+        "tier": None,
+        "attachment_url": None,
+        "filename": None,
+        "dialogue": dialogue_text,
+    }
+
+    # ── Resolve pending attack on FIRST action ────────────────────────────────
+    is_first_action = len(match_state.current_turn_actions) == 0
+    if is_first_action and match_state.pending_attack is not None:
+        # Talk is not a defense, so pending attack resolves as no defense
+        resolution = _resolve_pending_attack(match_state, action)
+        match_state.last_resolution = resolution
+
+    # ── Append action to the turn ─────────────────────────────────────────────
+    match_state.current_turn_actions.append(action)
+
+    # ── Store dialogue in video_cache for display when turn ends ─────────────
+    # We store it in video_cache even though it's not a video, 
+    # so it can be displayed alongside other actions
+    match_state.video_cache.setdefault(player_id, []).append({
+        "bytes": None,  # No video bytes
+        "label": "TALK",
+        "filename": f"dialogue_{len(match_state.video_cache.get(player_id, [])) + 1}.txt",
+        "dialogue": dialogue_text,
+    })
+
+    # ── Build feedback message ────────────────────────────────────────────────
+    summary = " → ".join(
+        f"{a['action_type'].upper()}" + (f" ({a['tier']})" if a["tier"] else "")
+        for a in match_state.current_turn_actions
+    )
+    msg = f"✅ **{summary}**. Keep going or `/end_turn` when done."
+
+    # Check if we just resolved a pending attack with talk
+    if is_first_action and match_state.pending_attack is None and hasattr(match_state, 'last_resolution') and match_state.last_resolution:
+        resolution = match_state.last_resolution
+        dmg = resolution["damage"]
+        msg = f"💥 No defense — took **{dmg} damage**! " + msg
+
+    return True, msg
+
+
 async def end_turn(
     match_state: MatchState,
     player_id: int,
