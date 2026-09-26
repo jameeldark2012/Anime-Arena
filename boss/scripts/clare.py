@@ -53,7 +53,6 @@ class ClareBossScript(BossScript):
         self._opponent_profile: str | None = None
         self._opponent_character_name: str = "the opponent"
         self._profile_loaded: bool = False
-        self._has_respawned: bool = False
 
         # Load clip catalog and character rules once at construction time.
         try:
@@ -267,20 +266,14 @@ class ClareBossScript(BossScript):
     # ------------------------------------------------------------------
 
     def try_respawn(self, state: BossState) -> Path | None:
-        if self._has_respawned:
-            return None
-        # Use a regeneration clip if available
-        regen_dir = CLARE_CLIPS_ROOT / "Regeneration"
-        clips = []
-        if regen_dir.exists():
-            clips = [p for p in regen_dir.iterdir() if p.suffix.lower() in {".mp4", ".mov", ".webm", ".mkv"}]
-        if not clips:
-            return None
-        self._has_respawned = True
-        return random.choice(clips)
+        # Clare does not have resurrection/regeneration ability in Claymore
+        # When her HP reaches 0, she is defeated permanently
+        logger.info("ClareBossScript: respawn disabled - Clare does not possess resurrection ability")
+        return None
 
     def respawn_hp(self, state: BossState) -> int:
-        return 4
+        # Not used since try_respawn always returns None
+        return 0
 
     def on_victory(self, state: BossState) -> Path | None:
         rp_dir = CLARE_CLIPS_ROOT / "RP"
