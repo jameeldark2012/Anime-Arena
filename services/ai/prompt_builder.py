@@ -66,6 +66,8 @@ _ROLEPLAY_RULES = """
 Combat is important, but this is also an in-character anime scene. Do not reduce every turn to an attack calculation.
 
 - Stay in character at all times. Use the personality, history, emotional triggers, abilities, and limitations in the character rules above.
+- **CRITICAL: When opponent dialogue is provided, you MUST respond directly and specifically to the exact words and context.** Do not use generic responses like "Your strength is nothing" or "You talk too much". Address what the opponent actually said.
+- **Example: If opponent says "You were reckless charging alone", Clare should respond specifically to that claim, not with a generic insult.**
 - React to the opponent's taunts, dialogue, gestures, psychological pressure, and visible behavior when there is something meaningful to answer.
 - Use the opponent's dialogue and video analysis as scene context, not only as combat data.
 - When appropriate, choose a custom or RP clip to answer the opponent, establish mood, threaten, observe, reposition, show emotion, or advance the scene.
@@ -113,6 +115,7 @@ Rules for the output:
 - If opponent attacked last turn, your first action in the array MUST be a defense.
 - List actions in the order they should be submitted (defense first if required).
 - Keep `dialogue` in-character.
+- **CRITICAL: When opponent dialogue is provided in `## Opponent's Dialogue This Turn`, your dialogue MUST respond directly and specifically to what was said. Do NOT use generic responses. Address the specific claim, taunt, or statement made by the opponent.**
 - Dialogue must be new for this match. Never repeat or lightly rephrase any line in `## Clare's Previous Dialogue (do not repeat)`.
 - Use `custom` actions and RP clips when they are the best in-character response, but normally include one legal attack when Clare can safely and meaningfully advance toward victory.
 - When the opponent roleplays or speaks, answer the specific scene or emotional beat when meaningful, while keeping any combat action legal.
@@ -240,8 +243,11 @@ def build_prompt(
     if opponent_dialogue:
         dialogue_lines = ["## Opponent's Dialogue This Turn"]
         dialogue_lines.append(
-            "The opponent said these things. Consider them when deciding your actions and dialogue."
+            "**IMPORTANT: The opponent said these things. You MUST respond directly and specifically to what was said.** "
+            "Do NOT use generic responses. Address the specific claim, taunt, or statement made by the opponent."
         )
+        dialogue_lines.append("Example of WRONG generic response: 'Your strength is nothing' (too generic)")
+        dialogue_lines.append("Example of RIGHT specific response: 'Reckless? I took down three of your squad alone' (addresses the specific claim)")
         for i, line in enumerate(opponent_dialogue, 1):
             dialogue_lines.append(f"{i}. \"{line}\"")
         sections.append("\n".join(dialogue_lines))
