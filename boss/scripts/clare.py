@@ -74,9 +74,11 @@ class ClareBossScript(BossScript):
         if not intro_filename or self._catalog is None:
             return None
         clip = self._catalog.get_clip(intro_filename)
-        if clip:
-            self._catalog.mark_used(clip.filename)
-        return clip.path if clip else None
+        if clip is None or clip.category.lower() != "intros":
+            return None
+        self._catalog.mark_used(clip.filename)
+        self._intro_played = True
+        return clip.path
 
     async def prepare_intro(self, state: BossState) -> None:
         """Ask the LLM to choose Clare's opening clip."""
@@ -302,6 +304,12 @@ class ClareBossScript(BossScript):
         if self._catalog is None:
             return None
         entry = self._catalog.get_clip(filename)
+        if (
+            entry is not None
+            and entry.category.lower() == "intros"
+            and self._catalog.get_available_clip(entry.filename) is None
+        ):
+            return None
         if entry:
             return entry.path
         logger.warning("ClareBossScript: clip '%s' not found in catalog.", filename)

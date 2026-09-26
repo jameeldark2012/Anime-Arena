@@ -59,11 +59,17 @@ class ClipCatalog:
         return clip
 
     def mark_used(self, clip_filename: str) -> None:
-        """Mark a clip as used (will be excluded from future available pools)."""
+        """Mark a clip as used; using an intro consumes the whole intro category."""
         # Look up the clip first to get its actual filename (case-sensitive)
         clip = self.get_clip(clip_filename)
         if clip:
             self._used_clips.add(clip.filename)
+            if clip.category.lower() == "intros":
+                self._used_clips.update(
+                    intro.filename
+                    for intro in self.all_clips()
+                    if intro.category.lower() == "intros"
+                )
         else:
             # If clip not found, still add the original filename as fallback
             self._used_clips.add(clip_filename)

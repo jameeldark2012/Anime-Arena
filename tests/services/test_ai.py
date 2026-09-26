@@ -4,7 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from boss.boss_manager import BossManagerService
-from boss.scripts.clare import _build_ai_state_from_boss
+from boss.scripts.clare import ClareBossScript, _build_ai_state_from_boss
 from services.ai import RateLimiter
 from services.ai.ai_match_state import AIMatchState
 from services.ai.character_rules import CharacterRules
@@ -31,6 +31,56 @@ def test_clip_catalog_excludes_used_clips_from_available_lookup():
     assert catalog.get_available_clip("first.mp4") is None
     assert catalog.get_available_clip("second.mp4") is not None
     assert [clip.filename for clip in catalog.clips_for("Normal Attack")] == ["second.mp4"]
+
+
+def test_marking_intro_used_excludes_every_intro_from_catalog():
+    catalog = ClipCatalog(root=Path("E:/tmp"))
+    catalog.clips_by_category["Intros"] = [
+        ClipEntry(Path("E:/tmp/first-intro.mp4"), "first-intro.mp4", "Intros", "first"),
+        ClipEntry(Path("E:/tmp/second-intro.mp4"), "second-intro.mp4", "Intros", "second"),
+    ]
+    catalog.clips_by_category["RP"] = [
+        ClipEntry(Path("E:/tmp/rp.mp4"), "rp.mp4", "RP", "roleplay"),
+    ]
+
+    catalog.mark_used("first-intro.mp4")
+
+    assert catalog.clips_for("Intros") == []
+    assert catalog.get_available_clip("second-intro.mp4") is None
+    assert catalog.get_available_clip("rp.mp4") is not None
+
+
+def test_clare_match_start_intro_closes_intro_choice_for_rest_of_match():
+    catalog = ClipCatalog(root=Path("E:/tmp"))
+    catalog.clips_by_category["Intros"] = [
+        ClipEntry(Path("E:/tmp/first-intro.mp4"), "first-intro.mp4", "Intros", "first"),
+        ClipEntry(Path("E:/tmp/second-intro.mp4"), "second-intro.mp4", "Intros", "second"),
+    ]
+    script = ClareBossScript.__new__(ClareBossScript)
+    script._catalog = catalog
+    script._pending_intro = "first-intro.mp4"
+    script._intro_played = False
+
+    assert script.on_match_start(None) == Path("E:/tmp/first-intro.mp4")
+    assert script._intro_played is True
+    assert catalog.clips_for("Intros") == []
+    assert script._resolve_clip_path("second-intro.mp4") is None
+
+
+def test_clare_turn_intro_blocks_other_intro_actions_in_same_turn():
+    catalog = ClipCatalog(root=Path("E:/tmp"))
+    catalog.clips_by_category["Intros"] = [
+        ClipEntry(Path("E:/tmp/first-intro.mp4"), "first-intro.mp4", "Intros", "first"),
+        ClipEntry(Path("E:/tmp/second-intro.mp4"), "second-intro.mp4", "Intros", "second"),
+    ]
+    script = ClareBossScript.__new__(ClareBossScript)
+    script._catalog = catalog
+    script._pending_intro = "first-intro.mp4"
+    script._intro_played = False
+
+    assert script.take_turn_intro(None) == Path("E:/tmp/first-intro.mp4")
+    assert catalog.clips_for("Intros") == []
+    assert script._resolve_clip_path("second-intro.mp4") is None
 
 
 def test_ai_match_state_tracks_opponent_analysis_and_ai_response_history():
