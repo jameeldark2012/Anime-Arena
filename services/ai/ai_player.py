@@ -126,6 +126,7 @@ async def decide_turn(
         turn_history=match_state.turn_history_log,
         available_clips=match_state.clip_catalog,
         opponent_character_name=opponent_character_name,
+        previous_ai_dialogues=match_state.previous_ai_dialogues(),
     )
     if opponent_media:
         prompt += _build_opponent_media_instructions(
@@ -247,7 +248,15 @@ async def decide_turn(
                 action = action.model_copy(update={"clip_filename": fallback.filename})
         validated_actions.append(action)
 
-    match_state.record_ai_response(match_state.current_turn, validated_actions)
+    # Mark each clip as used so it won't be available again in this match
+    for action in validated_actions:
+        match_state.mark_clip_used(action.clip_filename)
+
+    match_state.record_ai_response(
+        match_state.current_turn,
+        validated_actions,
+        dialogue=decision.dialogue,
+    )
     debug_event(
         "ai_actions_validated_and_history_recorded",
         match_id=match_state.match_id,
@@ -272,7 +281,14 @@ def _model_candidates(primary_model: str) -> list[str]:
 
 def _is_retryable_model_failure(error: Exception) -> bool:
     details = f"{type(error).__name__}: {error}".lower()
-    return "503" in details or "serviceunavailable" in details or "currently experiencing high demand" in details or "timeout" in details
+    return (
+        "503" in details
+        or "serviceunavailable" in details
+        or "currently experiencing high demand" in details
+        or "timeout" in details
+        or "invalid argument" in details
+        or "badrequesterror" in details
+    )
 
 
 def _build_opponent_media_instructions(
@@ -430,3 +446,5 @@ def _find_fallback_clip(match_state: AIMatchState, action: AIAction):
         if clips:
             return clips[0]
     return None
+
+

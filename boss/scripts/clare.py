@@ -40,13 +40,14 @@ class ClareBossScript(BossScript):
       1. prepare_turn() (async) calls the AI and caches the decision.
       2. plan_turn() reads the cached decision and returns clip paths.
 
-    Falls back to a random Normal attack if the AI call fails.
+    Submits no boss action if the AI call and model fallbacks all fail.
     """
 
     def __init__(self) -> None:
         self._pending_decision: AITurnDecision | None = None
         self._pending_intro: str | None = None
         self._intro_played: bool = False
+        self._ai_decision_failed: bool = False
         self._ai_state = None
         self._last_analyzed_turn: int | None = None
         self._opponent_profile: str | None = None
@@ -160,6 +161,7 @@ class ClareBossScript(BossScript):
                 opponent_character_name=self._opponent_character_name,
                 include_intro_choice=not self._intro_played,
             )
+            self._ai_decision_failed = False
             if not self._intro_played:
                 self._pending_intro = decision.intro_clip_filename
             descriptions = decision.opponent_analysis
@@ -187,7 +189,8 @@ class ClareBossScript(BossScript):
                 decision.reasoning[:120],
             )
         except Exception:
-            logger.exception("ClareBossScript: AI decision failed — will use fallback.")
+            logger.exception("ClareBossScript: AI decision failed — no random action will be used.")
+            self._ai_decision_failed = True
             self._pending_decision = None
         finally:
             cleanup_opponent_media(opponent_media)
@@ -204,6 +207,8 @@ class ClareBossScript(BossScript):
         decision = self._pending_decision
         self._pending_decision = None
         if decision is None:
+            if self._ai_decision_failed:
+                return []
             return None
 
         planned: list[dict] = []
@@ -217,7 +222,7 @@ class ClareBossScript(BossScript):
                 "action_type": action.action_type,
                 "tier": action.tier or "Normal",
                 "path": clip_path,
-                "dialogue": decision.dialogue,
+                "dialogue": decision.dialogue if not planned else None,
             })
 
         return planned or None

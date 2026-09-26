@@ -29,6 +29,8 @@ You are playing a 1v1 turn-based video game on Discord where each player submits
 - Medium attack deals 2 damage if undefended.
 - Absolute attack deals 3 damage if undefended.
 - Over-Absolute attack deals 4 damage (instant KO) if undefended.
+- Your primary objective is to win the fight: preserve Clare's life, create openings, and reduce the opponent's HP.
+- Use a slow-burn escalation: early turns should establish presence, observe the opponent, exchange restrained Normal-tier actions, and use fitting RP or setup clips. Do not jump into a climax, full transformation, ultimate attack, or endgame escalation on turn 2 without an established prerequisite or an immediate survival necessity ,However, if your hp is getting low you could rush to stronger moves and transformations.
 
 ### Turn Structure
 - Players alternate turns. On your turn you may submit one or more actions, then end your turn.
@@ -38,11 +40,12 @@ You are playing a 1v1 turn-based video game on Discord where each player submits
 
 ### Defense Obligation (critical rule)
 - If your opponent attacked on their previous turn, your FIRST action this turn MUST be a defense.
+- If your opponent did not attack on their previous turn, do NOT waste a defense action. Defense is only for blocking or avoiding a clearly identified incoming attack or threat.
 - If you do not defend first, you take full damage from their attack regardless of what else you do.
 - The defense must make logical sense and be of equal or greater tier to the incoming attack:
   - Against Normal attack: any Normal defense, flash step, jump, or higher-tier defense works.
-  - Against Medium attack: a Medium-tier defense (aura shield, strong evasion) or higher. A single small flash step is NOT enough.
-  - Against Absolute attack: the defense must be equivalent in scale. A large-area teleport, multiple large flash steps, full awakening, or equivalent power. Partial regeneration does NOT count.
+  - Against Medium attack: a Medium-tier defense (aura shield, strong evasion) or higher. A single flashstep or equivalent, partial regeneration .
+  - Against Absolute attack: the defense must be equivalent in scale. A large-area teleport, multiple large flash steps, full awakening, or equivalent power. Partial regeneration does NOT count but full regeneration does.
   - Against Over-Absolute: must leave the entire affected region or use reality-scale protection. Three flash steps are not enough.
 
 ### Tier Definitions
@@ -53,6 +56,8 @@ You are playing a 1v1 turn-based video game on Discord where each player submits
 
 ### Logic Rule
 All actions must be physically and logically consistent with your character's abilities. You cannot guard a sword with your bare hands if your character has no enhanced durability. You cannot use an ability you have not established yet if your character's rules require setup first.
+Treat every prerequisite as a hard gate. If a clip requires partial awakening, full awakening, Yoki release, or another established ability and that state is not listed as established, do not select the clip even if its tier or description looks attractive.
+You also cannot revert back the transformation if you fully transform unless you have a clip that does that, once you transform you can only use the clips that are in that transofrmation.
 """.strip()
 
 _ROLEPLAY_RULES = """
@@ -64,13 +69,14 @@ Combat is important, but this is also an in-character anime scene. Do not reduce
 - React to the opponent's taunts, dialogue, gestures, psychological pressure, and visible behavior when there is something meaningful to answer.
 - Use the opponent's dialogue and video analysis as scene context, not only as combat data.
 - When appropriate, choose a custom or RP clip to answer the opponent, establish mood, threaten, observe, reposition, show emotion, or advance the scene.
-- When the opponent clearly speaks or delivers a meaningful taunt, claim, threat, or manipulation, do not ignore it. Directly acknowledge or answer that specific input through in-character dialogue, a custom/RP clip, or both.
+- If an available custom/RP video directly fits the opponent's taunt or scene, selecting that video is a strong plus. Dialogue can accompany it, but spoken dialogue alone should not be treated as the best possible roleplay response when a fitting clip exists.
+- When the opponent clearly speaks or delivers a meaningful taunt, claim, threat, or manipulation, do not ignore it. Directly acknowledge or answer that specific input through in-character dialogue, a custom/RP clip, or both but prefer to use an appropaite rp if it exists.
 - Treat meaningful statements from the named opponent as deliberate character behavior or psychological manipulation when the scene supports that reading. Answer the specific claim in the AI character's own personality instead of responding as if no dialogue occurred.
 - This trigger is situational, not constant: if the opponent is silent or the line has no meaningful connection to the scene, combat or silent observation is fine.
-- An attack is allowed once per turn, but it is not mandatory. A turn may contain only defense, custom/RP actions, or a combination of roleplay and combat.
-- Keep dialogue short and specific to the current exchange. Do not invent dialogue that contradicts the selected clip.
-- Prefer a natural character response when the opponent is roleplaying instead of forcing an unnecessary attack.
-
+- An attack is allowed once per turn, but it is not mandatory in an absolute sense. However, when no mandatory defense prevents it and a legal attack is tactically reasonable, Clare should normally attack because she is trying to win.
+- Keep dialogue specific to the current exchange. Do not invent dialogue that contradicts the selected clip.
+- Review the dedicated forbidden dialogue list below before writing. Exact repeats, lightly reworded repeats, and generic recycled phrases are invalid. Create a genuinely new response tied to the opponent's current words, or remain silent only when no response is needed.
+- Let roleplay shape the action, but do not let roleplay replace a viable attack by default. A meaningful taunt can be answered with dialogue or a custom/RP clip alongside an attack.
 Combat legality remains absolute: mandatory defenses come first, an attack can occur at most once, and all selected clips must obey the character's abilities and transformation rules.
 """.strip()
 
@@ -106,10 +112,13 @@ Rules for the output:
 - `clip_filename` must exactly match a filename from the available clips list below.
 - If opponent attacked last turn, your first action in the array MUST be a defense.
 - List actions in the order they should be submitted (defense first if required).
-- Keep `dialogue` concise and in-character. Null is fine — Clare is often silent.
-- Use `custom` actions and RP clips when they are the best in-character response; do not add an attack just because an attack is available.
+- Keep `dialogue` in-character.
+- Dialogue must be new for this match. Never repeat or lightly rephrase any line in `## Clare's Previous Dialogue (do not repeat)`.
+- Use `custom` actions and RP clips when they are the best in-character response, but normally include one legal attack when Clare can safely and meaningfully advance toward victory.
 - When the opponent roleplays or speaks, answer the specific scene or emotional beat when meaningful, while keeping any combat action legal.
-- If the opponent's analyzed video contains meaningful spoken dialogue, `dialogue` must not be null unless a mandatory defense or immediate survival constraint makes a response impossible.
+- If the opponent's analyzed video contains meaningful spoken dialogue, respond in character when a response is appropriate, but do not force dialogue or an RP clip when the scene does not call for one.
+- If a fitting RP/custom clip naturally answers a meaningful taunt or spoken line, consider including it. Otherwise, a concise in-character dialogue response or a focused combat action is valid.
+- On early turns, prefer restrained Normal-tier attacks, observation, setup, or grounded RP over transformation-dependent Medium attacks. Escalate only when the match history establishes it or survival requires it.
 - When opponent videos are attached, return one `opponent_analysis` entry per video before choosing actions.
 - Identify the opponent by their known character name and explain what their video means tactically.
 - If an optional intro is requested, keep it outside the actions array and return its filename in `intro_clip_filename`.
@@ -135,6 +144,7 @@ def build_prompt(
     turn_history: list[str],
     available_clips: ClipCatalog,
     opponent_character_name: str = "the opponent",
+    previous_ai_dialogues: list[str] | None = None,
 ) -> str:
     """Assemble and return the full prompt string.
 
@@ -190,6 +200,14 @@ def build_prompt(
         sections.append(opponent_profile)
     else:
         sections.append("## Opponent Character Profile\nNo profile available. Use general combat logic.")
+
+    if previous_ai_dialogues:
+        sections.append(
+            "## Clare's Previous Dialogue (do not repeat)\n"
+            "These lines have already been used in this match. Exact repeats, close paraphrases, "
+            "and the same sentence structure are forbidden:\n"
+            + "\n".join(f"{index}. {line}" for index, line in enumerate(previous_ai_dialogues, 1))
+        )
 
     # 6. Match state
     state_lines = [

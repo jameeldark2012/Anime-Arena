@@ -133,6 +133,7 @@ class AIMatchState(MatchState):
             "opponent_descriptions": [],
             "opponent_dialogue": [],
             "ai_response": [],
+            "ai_dialogue": None,
         }
         self.turn_context_log.append(context)
         return context
@@ -152,7 +153,12 @@ class AIMatchState(MatchState):
         context["opponent_descriptions"] = descriptions
         context["opponent_dialogue"] = dialogue_lines or []
 
-    def record_ai_response(self, turn: int, actions: list[str | object]) -> None:
+    def record_ai_response(
+        self,
+        turn: int,
+        actions: list[str | object],
+        dialogue: str | None = None,
+    ) -> None:
         """Record the AI's response to an opponent turn and fold it into the compound prompt memory."""
         context = self._upsert_turn_context(turn)
 
@@ -169,6 +175,7 @@ class AIMatchState(MatchState):
             normalized_actions.append(str(action))
 
         context["ai_response"] = normalized_actions
+        context["ai_dialogue"] = dialogue
 
         opponent_descriptions = context.get("opponent_descriptions") or self.latest_opponent_descriptions()
         opponent_summary = ""
@@ -180,7 +187,8 @@ class AIMatchState(MatchState):
             opponent_summary = "an unseen opponent action"
 
         response_text = ", ".join(normalized_actions) if normalized_actions else "no response"
-        summary = f"Turn {turn}: Opponent did {opponent_summary}. I responded with {response_text}."
+        dialogue_text = f' Clare said: "{dialogue}"' if dialogue else ""
+        summary = f"Turn {turn}: Opponent did {opponent_summary}. I responded with {response_text}.{dialogue_text}"
         self.record_turn(summary)
 
     def record_opponent_clips(self, turn: int, descriptions: list[str]) -> None:
@@ -205,6 +213,14 @@ class AIMatchState(MatchState):
             return []
         latest_turn = max(self.opponent_dialogue.keys())
         return self.opponent_dialogue[latest_turn]
+
+    def previous_ai_dialogues(self) -> list[str]:
+        """Return Clare's prior spoken lines in chronological order."""
+        return [
+            str(entry["ai_dialogue"])
+            for entry in self.turn_context_log
+            if entry.get("ai_dialogue")
+        ]
 
     def mark_clip_used(self, clip_filename: str) -> None:
         """Mark a clip as used and update the catalog."""

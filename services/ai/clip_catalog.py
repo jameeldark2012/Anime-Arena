@@ -60,7 +60,13 @@ class ClipCatalog:
 
     def mark_used(self, clip_filename: str) -> None:
         """Mark a clip as used (will be excluded from future available pools)."""
-        self._used_clips.add(clip_filename)
+        # Look up the clip first to get its actual filename (case-sensitive)
+        clip = self.get_clip(clip_filename)
+        if clip:
+            self._used_clips.add(clip.filename)
+        else:
+            # If clip not found, still add the original filename as fallback
+            self._used_clips.add(clip_filename)
 
     def reset_used(self) -> None:
         """Clear all used marks (for testing or match restart)."""

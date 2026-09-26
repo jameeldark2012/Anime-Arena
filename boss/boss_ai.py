@@ -67,6 +67,7 @@ def _inject_action(
     action_type: str,
     tier: str,
     action_clip: tuple[bytes, str] | None,
+    dialogue: str | None = None,
 ) -> None:
     """Append a boss action, resolving an incoming attack on its first action."""
     action = {"action_type": action_type, "tier": tier}
@@ -86,6 +87,7 @@ def _inject_action(
             "bytes": action_clip[0],
             "label": action_type.upper(),
             "filename": filename,
+            "dialogue": dialogue,
         })
 
 
@@ -238,6 +240,7 @@ async def run_boss_turn(
                     planned_action["action_type"],
                     planned_action["tier"],
                     action_clip,
+                    planned_action.get("dialogue"),
                 )
         else:
             pre_clip_path, tier, attack_clip_path, post_clip_path = script.plan_turn(boss_state)
@@ -279,7 +282,10 @@ async def run_boss_turn(
             try:
                 await asyncio.wait_for(
                     channel.send(
-                        content=f"📹 **{config.display_name}**",
+                        content=(
+                            f"📹 **{config.display_name}**"
+                            + (f"\n{clip['dialogue']}" if clip.get("dialogue") else "")
+                        ),
                         file=discord.File(io.BytesIO(clip["bytes"]), filename=clip["filename"]),
                     ),
                     timeout=60.0,
@@ -289,8 +295,13 @@ async def run_boss_turn(
             except discord.HTTPException as e:
                 logger.warning("Failed to post attack clip '%s': %s", clip["filename"], e)
         if not cached:
-            logger.warning("Boss '%s' had no attack clip for tier '%s'.", config.slug, tier)
-            await channel.send(content=f"👊 **{config.display_name}** launches an attack!")
+            if action_plan:
+                logger.warning("Boss '%s' had no attack clip for tier '%s'.", config.slug, tier)
+                await channel.send(content=f"👊 **{config.display_name}** launches an attack!")
+            else:
+                await channel.send(
+                    content=f"⚠️ **{config.display_name}** could not complete an AI decision this turn; no attack was submitted."
+                )
 
         # Post embed.
         embed = await generate_turn_embed(boss_state, turn_summary)
