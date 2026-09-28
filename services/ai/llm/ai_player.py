@@ -17,8 +17,10 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import json
 import mimetypes
 import os
+import re
 import time
 from pathlib import Path
 from typing import Literal
@@ -28,22 +30,30 @@ import litellm
 from pydantic import BaseModel, Field, field_validator
 
 from core.debug import debug_event
-from services.ai.ai_match_state import AIMatchState
-from services.ai.clip_catalog import ClipEntry
-from services.ai.prompt_builder import build_prompt
-from services.ai.rate_limiter import estimate_text_tokens
+from services.ai.core.ai_match_state import AIMatchState
+from services.ai.core.clip_catalog import ClipEntry
+from services.ai.llm.base import MediaFile, Message
+from services.ai.llm.ollama import OllamaClient
+from services.ai.llm.opponent_analysis import (
+    set_last_turn_used_ollama,
+    should_unload_whisper_model,
+    unload_whisper_model,
+    warm_whisper_model,
+)
+from services.ai.llm.prompt_builder import build_prompt
+from services.ai.llm.rate_limiter import estimate_text_tokens
+from services.media.media_service import sample_video_frames
 
 AI_REQUEST_TIMEOUT_SECONDS = 60
 FALLBACK_MODELS = (
-    "gemini-3.5-flash",
-    "gemini-3.6-flash",
-    "gemini-3.7-flash",
-    "gemini-3.8-flash",
     "gemini-3.1-flash-lite",
-    "gemini-3-flash",
-    "gemini-2.5-flash",
     "gemini-2.5-flash-lite",
 )
+
+# FALLBACK_MODELS = (
+#     "gemini-2.5-flash"
+# )
+
 
 
 # ---------------------------------------------------------------------------
@@ -65,12 +75,66 @@ class AIAction(BaseModel):
         return v
 
 
+def _coerce_opponent_analysis_text(item: str | dict | object) -> str:
+    if isinstance(item, str):
+        text = item.strip()
+        if text.startswith("{") and text.endswith("}"):
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                return text
+            if isinstance(parsed, dict):
+                return _coerce_opponent_analysis_text(parsed)
+        return text
+    if isinstance(item, dict):
+        text = (
+            item.get("clip_description")
+            or item.get("video_description")
+            or item.get("description")
+            or item.get("analysis")
+            or item.get("text")
+            or item.get("summary")
+        )
+        tactical = item.get("tactical_meaning")
+        if text:
+            text = str(text).strip()
+            if tactical and str(tactical).strip() and str(tactical).strip() not in text:
+                return f"{text} {str(tactical).strip()}"
+            return text
+        return json.dumps(item, ensure_ascii=False)
+    return str(item)
+
+
+def _ensure_opponent_analysis_count(analyses: list[str], expected_count: int) -> list[str]:
+    if expected_count <= 0:
+        return []
+
+    normalized = [text.strip() for text in analyses if text and text.strip()]
+    normalized = normalized[:expected_count]
+    missing_count = expected_count - len(normalized)
+    normalized.extend(
+        ["No analysis was provided for this clip. Please provide one next time."]
+        * missing_count
+    )
+    return normalized
+
+
 class AITurnDecision(BaseModel):
     reasoning: str
     actions: list[AIAction]
     dialogue: str | None = None
     opponent_analysis: list[str] = Field(default_factory=list)
     intro_clip_filename: str | None = None
+
+    @field_validator("opponent_analysis", mode="before")
+    @classmethod
+    def normalize_opponent_analysis(cls, v):
+        if v is None:
+            return []
+        if not isinstance(v, list):
+            return [_coerce_opponent_analysis_text(v)]
+
+        return [_coerce_opponent_analysis_text(item) for item in v]
 
     @field_validator("actions")
     @classmethod
@@ -120,8 +184,8 @@ async def decide_turn(
         turn_number=match_state.current_turn,
         opponent_attacked_last_turn=opponent_attacked_last_turn,
         opponent_last_attack_tier=opponent_last_attack_tier,
-        opponent_last_attack_descriptions=match_state.latest_opponent_descriptions(),
-        opponent_dialogue=match_state.latest_opponent_dialogue(),
+        opponent_last_attack_descriptions=[],
+        opponent_dialogue=match_state.opponent_dialogue.get(match_state.current_turn, []),
         established_abilities=match_state.established_abilities,
         turn_history=match_state.turn_history_log,
         available_clips=match_state.clip_catalog,
@@ -165,6 +229,7 @@ async def decide_turn(
     if media_content:
         message_content = media_content + [{"type": "text", "text": prompt}]
 
+    unload_whisper_model()
     decision: AITurnDecision | None = None
     request_started = time.monotonic()
     last_error: Exception | None = None
@@ -205,7 +270,7 @@ async def decide_turn(
                     error_type=type(exc).__name__,
                     error=str(exc),
                 )
-                raise
+                break
             debug_event(
                 "ai_model_fallback",
                 match_id=match_state.match_id,
@@ -216,8 +281,15 @@ async def decide_turn(
                 error=str(exc),
             )
 
-    if decision is None and last_error is not None:
-        raise last_error
+    if decision is None:
+        # If Ollama fallback fails, raise its error (not the primary error)
+        decision = await _decide_with_ollama_fallback(
+            prompt=prompt,
+            opponent_media=opponent_media or [],
+            match_id=match_state.match_id,
+            turn=match_state.current_turn,
+            primary_error=last_error,
+        )
 
     debug_event(
         "ai_response_received",
@@ -237,7 +309,8 @@ async def decide_turn(
         has_dialogue=bool(decision.dialogue),
     )
 
-    # Post-validation: verify clip filenames exist in the catalog
+    # Validate and reserve clips sequentially so duplicate actions in one
+    # response cannot both pass availability checks.
     validated_actions: list[AIAction] = []
     for action in decision.actions:
         clip = match_state.clip_catalog.get_available_clip(action.clip_filename)
@@ -246,12 +319,31 @@ async def decide_turn(
             fallback = _find_fallback_clip(match_state, action)
             if fallback:
                 action = action.model_copy(update={"clip_filename": fallback.filename})
+        match_state.mark_clip_used(action.clip_filename)
         validated_actions.append(action)
 
-    # Mark each clip as used so it won't be available again in this match
-    for action in validated_actions:
-        match_state.mark_clip_used(action.clip_filename)
+    # Convert opponent_analysis to list of strings if needed
+    opponent_analysis_strings = [
+        _coerce_opponent_analysis_text(item) for item in decision.opponent_analysis
+    ]
+    expected_analysis_count = len(opponent_media or [])
+    if expected_analysis_count and len(opponent_analysis_strings) < expected_analysis_count:
+        debug_event(
+            "ai_opponent_analysis_missing_entries",
+            match_id=match_state.match_id,
+            turn=match_state.current_turn,
+            expected_count=expected_analysis_count,
+            returned_count=len(opponent_analysis_strings),
+        )
+    opponent_analysis_strings = _ensure_opponent_analysis_count(
+        opponent_analysis_strings,
+        expected_analysis_count,
+    )
 
+    match_state.record_opponent_analysis(
+        match_state.current_turn,
+        opponent_analysis_strings,
+    )
     match_state.record_ai_response(
         match_state.current_turn,
         validated_actions,
@@ -266,7 +358,150 @@ async def decide_turn(
         opponent_descriptions=match_state.latest_opponent_descriptions(),
         opponent_dialogue=match_state.latest_opponent_dialogue(),
     )
+    # Gemini succeeded, don't unload Whisper for next turn
+    set_last_turn_used_ollama(False)
+    # Don't load Whisper here - it will be loaded after the turn completes
+    # to avoid blocking the turn execution
     return decision.model_copy(update={"actions": validated_actions})
+
+
+async def _decide_with_ollama_fallback(
+    *,
+    prompt: str,
+    opponent_media: list[dict],
+    match_id: int,
+    turn: int,
+    primary_error: Exception | None,
+) -> AITurnDecision:
+    """Use local Qwen vision after the configured Gemini chain fails."""
+    if os.environ.get("OLLAMA_FALLBACK_ENABLED", "true").lower() not in {"1", "true", "yes", "on"}:
+        raise RuntimeError("OLLAMA_FALLBACK_ENABLED is disabled.")
+
+    model = os.environ.get(
+        "OLLAMA_FALLBACK_MODEL",
+        "fredrezones55/Qwen3.5-APEX:latest",
+    )
+
+    video_items: list[tuple[dict, Path]] = []
+    for item in opponent_media:
+        video_path = Path(item["path"])
+        if video_path.is_file():
+            video_items.append((item, video_path))
+
+    total_frame_limit = max(1, int(os.environ.get("OLLAMA_MAX_VIDEO_FRAMES", "12")))
+    frame_max_dimension = max(128, int(os.environ.get("OLLAMA_FRAME_MAX_SIDE", "448")))
+    frame_budgets = _allocate_ollama_frame_budgets(len(video_items), total_frame_limit)
+    sampled_frame_paths: list[Path] = []
+    media: list[MediaFile] = []
+    for (item, video_path), frame_budget in zip(video_items, frame_budgets):
+        if frame_budget <= 0:
+            continue
+        try:
+            frames = sample_video_frames(
+                video_path,
+                min_frames=min(3, frame_budget),
+                max_frames=frame_budget,
+                fps=5.0,
+                max_dimension=frame_max_dimension,
+            )
+        except Exception as exc:
+            debug_event(
+                "ai_ollama_fallback_frame_sampling_failed",
+                match_id=match_id,
+                turn=turn,
+                filename=item.get("filename"),
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
+            frames = []
+        if not frames:
+            media.append(MediaFile(path=video_path, mime_type=mimetypes.guess_type(item["filename"])[0]))
+            continue
+        sampled_frame_paths.extend(frames)
+        for frame_path in frames:
+            media.append(MediaFile(path=frame_path, mime_type="image/jpeg"))
+
+    fallback_prompt = (
+        f"The primary Gemini decision service failed with {type(primary_error).__name__ if primary_error else 'an unknown error'}. "
+        "You are the local fallback decision service. Follow the complete battle prompt below exactly. "
+        "These attached frames are uniformly sampled from the opponent's recent videos; analyze them in order and infer the tactic. "
+        "Return valid JSON matching the requested AITurnDecision schema.\n\n"
+        + prompt
+    )
+    text_token_estimate = estimate_text_tokens(fallback_prompt)
+    image_tokens_per_frame_estimate = _estimate_qwen35_frame_tokens(frame_max_dimension)
+    media_token_estimate = len(sampled_frame_paths) * image_tokens_per_frame_estimate
+    debug_event(
+        "ai_ollama_fallback_started",
+        match_id=match_id,
+        turn=turn,
+        model=model,
+        media_count=len(media),
+        sampled_frame_count=len(sampled_frame_paths),
+        text_token_estimate=text_token_estimate,
+        image_tokens_per_frame_estimate=image_tokens_per_frame_estimate,
+        media_token_estimate=media_token_estimate,
+        total_input_token_estimate=text_token_estimate + media_token_estimate,
+        media_token_estimate_basis="approximate Qwen3.5 16px patches merged 2x2, square max-dimension bound",
+        text_characters=len(fallback_prompt),
+        total_frame_limit=total_frame_limit,
+        frame_max_dimension=frame_max_dimension,
+        primary_error_type=type(primary_error).__name__ if primary_error else None,
+    )
+    client = OllamaClient(model=model)
+    try:
+        response = await asyncio.wait_for(
+            asyncio.to_thread(client.generate, Message(text=fallback_prompt, media=media)),
+            timeout=300,
+        )
+        decision = _parse_ollama_decision(response.text)
+    finally:
+        for frame_path in sampled_frame_paths:
+            frame_path.unlink(missing_ok=True)
+        for frame_dir in {path.parent for path in sampled_frame_paths}:
+            try:
+                frame_dir.rmdir()
+            except OSError:
+                pass
+
+    debug_event(
+        "ai_ollama_fallback_complete",
+        match_id=match_id,
+        turn=turn,
+        model=model,
+        media_count=len(media),
+        action_count=len(decision.actions),
+    )
+    # Ollama was used, so mark for Whisper unloading after the turn completes
+    set_last_turn_used_ollama(True)
+    return decision
+
+
+def _allocate_ollama_frame_budgets(video_count: int, total_frame_limit: int) -> list[int]:
+    if video_count <= 0 or total_frame_limit <= 0:
+        return [0] * max(video_count, 0)
+    base, remainder = divmod(total_frame_limit, video_count)
+    return [base + int(index < remainder) for index in range(video_count)]
+
+
+def _estimate_qwen35_frame_tokens(max_dimension: int) -> int:
+    patch_merge_size = 16 * 2
+    patches_per_side = (max_dimension + patch_merge_size - 1) // patch_merge_size
+    return patches_per_side**2 + 2
+
+
+def _parse_ollama_decision(text: str) -> AITurnDecision:
+    """Parse Qwen JSON, tolerating a fenced or surrounding prose response."""
+    cleaned = text.strip()
+    cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", cleaned, flags=re.IGNORECASE)
+    try:
+        return AITurnDecision.model_validate_json(cleaned)
+    except Exception:
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+        if start < 0 or end <= start:
+            raise ValueError("Ollama fallback did not return a JSON decision.")
+        return AITurnDecision.model_validate(json.loads(cleaned[start:end + 1]))
 
 
 def _model_candidates(primary_model: str) -> list[str]:
@@ -288,6 +523,8 @@ def _is_retryable_model_failure(error: Exception) -> bool:
         or "timeout" in details
         or "invalid argument" in details
         or "badrequesterror" in details
+        or "notfounderror" in details
+        or "404" in details
     )
 
 
@@ -305,7 +542,7 @@ def _build_opponent_media_instructions(
         f"- Their own position or stance: standing, crouching, mid-air, behind the opponent, etc.",
         f"- Where they performed the action relative to the opponent: front, behind, above, flanking, etc.",
         f"- Where the action landed, if applicable: head, torso, limb, etc., and what result it caused",
-        f"- If they say anything, quote their words exactly; this is mandatory when audible",
+        "If speech is audible, use the separate clip transcript as audio evidence. Do not assume the speaker is the opponent unless the video supports that identification.",
         "- Anything else relevant and visible that improves understanding of what happened",
         f"Keep the focus on {opponent_character_name}'s action. Use they/them pronouns for {opponent_character_name} throughout; do not say 'the first character' or 'another character'.",
         "Separate visible facts from uncertain interpretation. Explain the tactical meaning: attacking, defending, evading, powering up, taunting, or reacting.",
@@ -448,3 +685,25 @@ def _find_fallback_clip(match_state: AIMatchState, action: AIAction):
     return None
 
 
+async def warm_whisper_after_turn() -> bool:
+    """Load Whisper after a turn completes, if it should be kept loaded.
+    
+    Call this after the turn has fully finished (after clips are posted, etc.)
+    to avoid blocking the turn execution with model loading.
+    
+    Returns True if Whisper was loaded, False otherwise.
+    """
+    # Only warm if Ollama was NOT used last turn
+    if not should_unload_whisper_model():
+        try:
+            from services.ai.llm.opponent_analysis import warm_whisper_model
+            return await warm_whisper_model()
+        except ImportError:
+            debug_event("opponent_speech_to_text_skipped", reason="faster_whisper_not_installed")
+        except Exception as exc:
+            debug_event(
+                "opponent_speech_to_text_model_warm_failed",
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
+    return False

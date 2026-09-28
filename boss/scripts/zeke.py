@@ -1,321 +1,344 @@
+"""Zeke boss script — AI-driven using the AIPlayer decision engine.
+
+Unlike Zeke's old deterministic script, Zeke makes real decisions each turn
+by calling decide_turn() which sends the match context to Gemini and gets
+back a structured AITurnDecision.
+
+The async prepare_turn() hook fetches the decision before plan_turn() is
+called, caching it on self._pending_decision. plan_turn() then reads from
+that cache and maps the AI's clip choices back to the boss clip system.
+"""
 from __future__ import annotations
 
 import logging
-import random
+import os
 from pathlib import Path
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING
 
 from boss.boss_script import BossScript
+from core.debug import debug_event
+from services.ai.llm.ai_player import AITurnDecision, choose_intro_clip, decide_turn
+from services.ai.core.clip_catalog import load_catalog
+from services.ai.llm.characters.zeke_rules import build_zeke_rules
+from services.ai.llm.opponent_analysis import cleanup_opponent_media, prepare_opponent_media
+from services.content.character_profile_service import get_profile_by_name
 
 if TYPE_CHECKING:
     from boss.boss_state import BossState
+    from services.ai.core.ai_match_state import AIMatchState
 
 logger = logging.getLogger(__name__)
 
-
-# ---------------------------------------------------------------------------
-# Turn plan type
-# ---------------------------------------------------------------------------
-
-class TurnPlan(NamedTuple):
-    pre:    str | None   # RP subfolder filename, relative to clips_dir
-    tier:   str          # "Normal" | "Medium" | "Absolute" | "Over-Absolute"
-    attack: str          # attack clip filename, relative to attacks/<tier_folder>/
-    post:   str | None   # RP subfolder filename, relative to clips_dir
-
-
-# ---------------------------------------------------------------------------
-# The full 29-turn script
-# ---------------------------------------------------------------------------
-# Each entry: TurnPlan(pre_rp, tier, attack_filename, post_rp)
-# pre/post are bare filenames inside their respective folders.
-# Attack filenames are inside attacks/<tier>/.
-
-_SCRIPT: list[TurnPlan] = [
-    # ── ACT 1: Arrogant and lazy (turns 1-7) ─────────────────────────────────
-    TurnPlan(
-        pre="Watches you.mp4",
-        tier="Normal",
-        attack="Normal attack 1 calls on titans.mp4",
-        post=None,
-    ),
-    TurnPlan(
-        pre="Scratches its ear and smiles sinseterly.mp4",
-        tier="Normal",
-        attack="Normal attack 2 turns to right then swipe fangs.mp4",
-        post=None,
-    ),
-    TurnPlan(
-        pre=None,
-        tier="Normal",
-        attack="Normal attack 3 human form calles on titans on u.mp4",
-        post=None,
-    ),
-    TurnPlan(
-        pre=None,
-        tier="Normal",
-        attack="Normal attack 4 throws human flesh at u above in the sky.mp4",
-        post=None,
-    ),
-    TurnPlan(
-        pre=None,
-        tier="Normal",
-        attack="Normal attack 5 throws flesh behind him.mp4",
-        post="Hands in air after rocks, gameuu setuu, im good at.mp4",
-    ),
-    TurnPlan(
-        pre=None,
-        tier="Normal",
-        attack="Normal attack 6 throws flesh above himself.mp4",
-        post=None,
-    ),
-    TurnPlan(
-        pre=None,
-        tier="Normal",
-        attack="Normal attack 7 throws some rocks.mp4",
-        post="Mocks after throwing rocks on city, went too high .mp4",
-    ),
-
-    # ── ACT 2: Annoyed, escalating (turns 8-18) ──────────────────────────────
-    TurnPlan(
-        pre="Sits down next to you and looks scary beast form.mp4",
-        tier="Medium",
-        attack="Medium attack 1 throw horse.mp4",
-        post=None,
-    ),
-    TurnPlan(
-        pre=None,
-        tier="Medium",
-        attack="Medium attack 2 throw big rock.mp4",
-        post=None,
-    ),
-    TurnPlan(
-        pre="What would throwing these things do gets angry.mp4",
-        tier="Medium",
-        attack="Medium attack 3 smashes ground and sends titans.mp4",
-        post=None,
-    ),
-    TurnPlan(
-        pre=None,
-        tier="Medium",
-        attack="Medium attack 4 what are you acheving with screaming!!!! gets pissed and throws rocks.mp4",
-        post=None,
-    ),
-    TurnPlan(
-        pre=None,
-        tier="Medium",
-        attack="Medium attack 5 throws things devasting area.mp4",
-        post="He says poor things with sympathy.mp4",
-    ),
-    TurnPlan(
-        pre=None,
-        tier="Medium",
-        attack="Medium attack 6 throws rocks good damage besat for.mp4",
-        post=None,
-    ),
-    TurnPlan(
-        pre=None,
-        tier="Medium",
-        attack="Medium attack 7 thows rocks 90 degrees convered on front.mp4",
-        post=None,
-    ),
-    TurnPlan(
-        pre=None,
-        tier="Medium",
-        attack="Medium attack 8 human form call on titans RAINING.mp4",
-        post=None,
-    ),
-    TurnPlan(
-        pre=None,
-        tier="Medium",
-        attack="Medium attack 9 throws rock at sky above.mp4",
-        post=None,
-    ),
-    TurnPlan(
-        pre=None,
-        tier="Medium",
-        attack="Medium attack 10 throws rocks from above to below .mp4",
-        post=None,
-    ),
-    TurnPlan(
-        pre=None,
-        tier="Medium",
-        attack="Medium attack 11 rocks from above to below.mp4",
-        post=None,
-    ),
-
-    # ── ACT 3: Done playing, going for the kill (turns 19-29) ────────────────
-    TurnPlan(
-        pre="Lets end it here, i want to be over with this huma.mp4",
-        tier="Absolute",
-        attack="Absolute 1 summons titans destroys city.mp4",
-        post=None,
-    ),
-    TurnPlan(
-        pre=None,
-        tier="Absolute",
-        attack="Absolute 2 throws barrel destroys city.mp4",
-        post=None,
-    ),
-    TurnPlan(
-        pre=None,
-        tier="Absolute",
-        attack="Absolute 3 throws big shattered rocks On cityy.mp4",
-        post=None,
-    ),
-    TurnPlan(
-        pre=None,
-        tier="Absolute",
-        attack="Absolute 4 big rocks on city.mp4",
-        post=None,
-    ),
-    TurnPlan(
-        pre=None,
-        tier="Absolute",
-        attack="Absolute 4 big rocks on city, mocks (perfect gamu).mp4",
-        post=None,
-    ),
-    TurnPlan(
-        pre=None,
-        tier="Absolute",
-        attack="Absolute 5 rocks throw.mp4",
-        post=None,
-    ),
-    TurnPlan(
-        pre=None,
-        tier="Absolute",
-        attack="Absolute 6 first crushes stonr with its hand gets pissed then is surprised about being pissed so he tries to have fun throws massive rocks.mp4",
-        post=None,
-    ),
-    TurnPlan(
-        pre=None,
-        tier="Absolute",
-        attack="Absolute 7 human form summon titans from above nukes city.mp4",
-        post=None,
-    ),
-    TurnPlan(
-        pre=None,
-        tier="Absolute",
-        attack="Absolute 8 throws rocks high area damage to ships.mp4",
-        post=None,
-    ),
-    TurnPlan(
-        pre=None,
-        tier="Absolute",
-        attack="Absolute 8 gets up from ground call titans city destroyed also says What a shame.mp4",
-        post=None,
-    ),
-    TurnPlan(
-        pre=None,
-        tier="Medium",
-        attack="Medium attack 12 big rocks throw.mp4",
-        post=None,
-    ),
-]
-
-# After turn 29, loop from turn 19 (index 18) — permanent nuke mode.
-_LOOP_FROM = 18
-
-# Tier folder mapping (matches TIER_FOLDER in boss_config.py).
-_TIER_FOLDER = {
-    "Normal": "normal",
-    "Medium": "medium",
-    "Absolute": "absolute",
-    "Over-Absolute": "over_absolute",
-}
+# Root of Zeke's clip library — must match where the files live.
+ZEKE_CLIPS_ROOT = Path("E:/D2/Python/Anime Arena/assets/boss_clips/zeke")
 
 
 # ---------------------------------------------------------------------------
 # ZekeScript
 # ---------------------------------------------------------------------------
 
+
 class ZekeScript(BossScript):
-    """Fully deterministic script for Zeke Yeager (Beast Titan).
+    """AI-driven script for Zeke Yeager (Beast Titan).
 
-    Every boss turn is pre-planned. The turn counter advances by 1 each time
-    plan_turn() is called. After turn 29 the script loops from turn 19 onward
-    (permanent ACT 3 / nuke mode).
+    Each turn:
+      1. prepare_turn() (async) calls the AI and caches the decision.
+      2. plan_turn() reads the cached decision and returns clip paths.
 
-    Respawn fires once when boss HP hits 0 (Full rebirth → HP restored to 4).
-    Victory / defeat clips play at match end.
-    Intros are the only randomised element — a different one each fight.
+    Zeke has no defense - he must always prioritize offensive actions.
+    Submits no boss action if the AI call and model fallbacks all fail.
     """
 
     def __init__(self) -> None:
-        # 0-indexed position in _SCRIPT. Incremented each call to plan_turn().
-        self._turn_index: int = 0
-        self._has_respawned: bool = False
+        self._pending_decision = None
+        self._pending_intro = None
+        self._intro_played = False
+        self._ai_decision_failed = False
+        self._ai_state = None
+        self._last_analyzed_turn = None
+        self._opponent_profile = None
+        self._opponent_character_name = "the opponent"
+        self._profile_loaded = False
+        self._has_respawned = False
+
+        # Load clip catalog and character rules once at construction time.
+        try:
+            self._catalog = load_catalog(ZEKE_CLIPS_ROOT)
+            self._rules = build_zeke_rules(ZEKE_CLIPS_ROOT)
+            logger.info("ZekeBossScript: clip catalog loaded (%d categories).", len(self._catalog.clips_by_category))
+        except Exception:
+            logger.exception("ZekeBossScript: failed to load clip catalog — Zeke will use fallback attacks only.")
+            self._catalog = None
+            self._rules = None
 
     # ------------------------------------------------------------------
-    # Intro (only randomness in the script)
+    # Intro
     # ------------------------------------------------------------------
 
     def on_match_start(self, state: BossState) -> Path | None:
-        intros_dir = state.boss_config.clips_dir / "intros"
-        if not intros_dir.exists():
+        intro_filename = getattr(self, "_pending_intro", None)
+        self._pending_intro = None
+        if not intro_filename or self._catalog is None:
             return None
-        clips = [
-            p for p in intros_dir.iterdir()
-            if p.suffix.lower() in {".mp4", ".mov", ".webm", ".mkv"}
-        ]
-        return random.choice(clips) if clips else None
+        clip = self._catalog.get_clip(intro_filename)
+        if clip is None or clip.category.lower() != "intros":
+            return None
+        self._catalog.mark_used(clip.filename)
+        self._intro_played = True
+        return clip.path
 
-    # ------------------------------------------------------------------
-    # Scripted turn plan
-    # ------------------------------------------------------------------
+    async def prepare_intro(self, state: BossState) -> None:
+        """Ask the AI to choose Zeke's opening clip."""
+        if self._catalog is None or not hasattr(self._rules, "intros"):
+            return
+
+        intros = [c for c in self._catalog.clips_by_category.get("intros", [])]
+        chosen = await choose_intro_clip(
+            character_name="Zeke",
+            series="Attack on Titan",
+            intro_clips=intros,
+            match_id=state.match_id,
+        )
+        self._pending_intro = chosen
+
+
+
+
+    async def prepare_turn(self, state: BossState) -> None:
+        """Build AI context and get a turn decision from the LLM."""
+        if self._catalog is None or self._rules is None:
+            self._pending_decision = None
+            return
+
+        # Only regenerate opponent profile when needed (first turn).
+        if not self._profile_loaded:
+            player_char_id = state.player1_char_id
+            try:
+                profile = await get_profile_by_name(player_char_id)
+                if profile:
+                    self._opponent_profile = profile.description
+                    self._opponent_character_name = profile.char_name
+                    self._profile_loaded = True
+            except Exception as e:
+                logger.warning("Zeke: could not load opponent profile: %s", e)
+
+        # Preserve the AI's compound history between turns while refreshing live state.
+        if self._ai_state is None:
+            self._ai_state = _build_ai_state_from_boss(state, self._rules, self._catalog)
+        else:
+            _sync_ai_state_from_boss(self._ai_state, state)
+        ai_state = self._ai_state
+
+        # Analyze the most recent player turn to feed context into the LLM.
+        opponent_media: list[dict] = []
+        try:
+            opponent_media = await prepare_opponent_media(
+                actions=getattr(state, "last_completed_turn_actions", []),
+                match_id=state.match_id,
+                turn=state.current_turn,
+            )
+        except Exception as e:
+            logger.warning("Zeke failed to analyze opponent media: %s", e)
+        
+        # Prepare turn inputs for AI decision.
+        player_attacked_last = _player_attacked_last_turn(state)
+        player_last_tier = _player_last_attack_tier(state)
+
+        debug_event(
+            "zeke_turn_decision_started",
+            match_id=state.match_id,
+            character="Zeke",
+            turn=state.current_turn,
+            opponent_action_count=len(getattr(state, "last_completed_turn_actions", [])),
+            opponent_media_count=len(opponent_media),
+            opponent_profile=self._opponent_profile,
+            opponent_character=self._opponent_character_name,
+            ai_model=os.environ.get("GOOGLE_MODEL", "gemini-3.5-flash-lite"),
+        )
+
+        try:
+            decision = await decide_turn(
+                match_state=ai_state,
+                opponent_profile=self._opponent_profile,
+                opponent_attacked_last_turn=player_attacked_last,
+                opponent_last_attack_tier=player_last_tier,
+                opponent_media=opponent_media,
+                opponent_character_name=self._opponent_character_name,
+                include_intro_choice=False,
+            )
+            self._ai_decision_failed = False
+            self._pending_decision = decision
+            self._last_analyzed_turn = state.current_turn
+            debug_event("zeke_turn_decision_complete", match_id=state.match_id)
+        except Exception as e:
+            logger.warning("Zeke AI turn decision failed: %s", e)
+            debug_event(
+                "zeke_ai_decision_failed",
+                match_id=state.match_id,
+                error_type=type(e).__name__,
+                error=str(e),
+            )
+            self._ai_decision_failed = True
+            self._pending_decision = None
+        finally:
+            cleanup_opponent_media(opponent_media)
+
+    def uses_plan_turn(self) -> bool:
+        return True
+
+    def plan_actions(self, state: BossState) -> list[dict] | None:
+        """Map every valid LLM action to an ordered boss action plan."""
+        decision: AITurnDecision | None = self._pending_decision
+        self._pending_decision = None
+
+        if decision is None:
+            return None
+
+        planned: list[dict] = []
+        for action in decision.actions:
+            if action.action_type == "defense":
+                logger.info("Zeke: ignoring LLM defense action; Zeke never defends.")
+                continue
+            clip_path = self._resolve_clip_path(action.clip_filename)
+            if clip_path is None:
+                continue
+            if self._catalog is not None:
+                self._catalog.mark_used(action.clip_filename)
+            planned.append({
+                "action_type": action.action_type,
+                "tier": action.tier or "Normal",
+                "path": clip_path,
+                "dialogue": decision.dialogue if not planned else None,
+            })
+
+        if planned and not any(action["action_type"] == "attack" for action in planned):
+            fallback_path = self._pick_fallback_attack()
+            if fallback_path is not None:
+                self._catalog.mark_used(fallback_path.name)
+                planned.append({
+                    "action_type": "attack",
+                    "tier": "Normal",
+                    "path": fallback_path,
+                    "dialogue": None,
+                })
+
+        return planned or None
 
     def plan_turn(self, state: BossState) -> tuple[Path | None, str, Path | None, Path | None]:
-        """Return the pre-planned turn for the current turn index."""
-        clips_dir = state.boss_config.clips_dir
+        """Map the cached LLM decision to the boss turn contract."""
+        decision: AITurnDecision | None = self._pending_decision
+        self._pending_decision = None
 
-        plan = _SCRIPT[self._turn_index]
+        if decision is None:
+            return self._fallback_turn(state)
 
-        # Advance index, looping back into ACT 3 after the last turn.
-        self._turn_index += 1
-        if self._turn_index >= len(_SCRIPT):
-            self._turn_index = _LOOP_FROM
+        attack_action = next(
+            (action for action in decision.actions if action.action_type == "attack"),
+            None,
+        )
+        if attack_action is None:
+            return self._fallback_turn(state)
 
-        pre_path  = (clips_dir / "RP" / plan.pre) if plan.pre else None
-        post_path = (clips_dir / "RP" / plan.post) if plan.post else None
-        attack_path = clips_dir / "attacks" / _TIER_FOLDER[plan.tier] / plan.attack
+        attack_path = self._resolve_clip_path(attack_action.clip_filename)
+        if attack_path is not None and self._catalog is not None:
+            self._catalog.mark_used(attack_action.clip_filename)
+        return None, attack_action.tier or "Normal", attack_path, None
 
-        # Validate paths — fall back gracefully if a file is missing.
-        if pre_path and not pre_path.exists():
-            logger.warning("Zeke pre-clip missing: %s", pre_path)
-            pre_path = None
-        if post_path and not post_path.exists():
-            logger.warning("Zeke post-clip missing: %s", post_path)
-            post_path = None
-        if not attack_path.exists():
-            logger.warning("Zeke attack clip missing: %s — will pick randomly.", attack_path)
-            attack_path = None
+    def _resolve_clip_path(self, filename: str) -> Path | None:
+        if self._catalog is None:
+            return None
+        entry = self._catalog.get_clip(filename)
+        if entry is None:
+            logger.warning("Zeke: clip '%s' not found in catalog.", filename)
+            return None
+        if entry.category.lower() == "intros" and self._catalog.get_available_clip(entry.filename) is None:
+            return None
+        return entry.path
 
-        return pre_path, plan.tier, attack_path, post_path
+    def _fallback_turn(self, state: BossState) -> tuple[Path | None, str, Path | None, Path | None]:
+        """Use a normal attack if the LLM cannot provide a usable attack."""
+        attack_path = self._pick_fallback_attack()
+        if attack_path is not None and self._catalog is not None:
+            self._catalog.mark_used(attack_path.name)
+        return None, "Normal", attack_path, None
 
-    # ------------------------------------------------------------------
-    # Respawn
-    # ------------------------------------------------------------------
+    def _pick_fallback_attack(self) -> Path | None:
+        if self._catalog is None:
+            return None
+        clip = self._catalog.pick_available("attacks.normal")
+        return clip.path if clip else None
 
     def try_respawn(self, state: BossState) -> Path | None:
         if self._has_respawned:
             return None
-        path = state.boss_config.clips_dir / "defenses" / "Full rebirth (online-video-cutter.com).mp4"
-        if not path.exists():
+        respawn_path = ZEKE_CLIPS_ROOT / "defenses" / "Full rebirth (online-video-cutter.com).mp4"
+        if not respawn_path.exists():
             return None
         self._has_respawned = True
-        return path
+        return respawn_path
 
     def respawn_hp(self, state: BossState) -> int:
         return 10
 
-    # ------------------------------------------------------------------
-    # Victory / defeat
-    # ------------------------------------------------------------------
-
     def on_victory(self, state: BossState) -> Path | None:
-        p = state.boss_config.clips_dir / "RP" / "I won beast form.mp4"
-        return p if p.exists() else None
+        victory_path = ZEKE_CLIPS_ROOT / "RP" / "I won beast form.mp4"
+        return victory_path if victory_path.exists() else None
 
     def on_defeat(self, state: BossState) -> Path | None:
-        p = state.boss_config.clips_dir / "RP" / "Falls from above and dies.mp4"
-        return p if p.exists() else None
+        defeat_path = ZEKE_CLIPS_ROOT / "RP" / "Falls from above and dies.mp4"
+        return defeat_path if defeat_path.exists() else None
+
+
+def _build_ai_state_from_boss(state: BossState, rules, catalog) -> "AIMatchState":
+    """Create the lightweight match state required by the LLM decision engine."""
+    from boss.boss_config import BOSS_PLAYER_ID
+    from services.ai.core.ai_match_state import AIMatchState
+
+    ai_state = AIMatchState.__new__(AIMatchState)
+    ai_state.match_id = state.match_id
+    ai_state.player1_id = state.player1_id
+    ai_state.player2_id = BOSS_PLAYER_ID
+    ai_state.player1_char_id = state.player1_char_id
+    ai_state.player2_char_id = state.player2_char_id
+    ai_state.player1_hp = state.player1_hp
+    ai_state.player2_hp = state.boss_hp
+    ai_state.current_turn = state.current_turn
+    ai_state.current_player_id = state.current_player_id
+    ai_state.pending_attack = getattr(state, "pending_attack", None)
+    ai_state.pending_attacker_id = getattr(state, "pending_attacker_id", None)
+    ai_state.status = getattr(state, "status", "active")
+    ai_state.character_rules = rules
+    ai_state.clip_catalog = catalog
+    ai_state.turn_history_log = []
+    ai_state.turn_context_log = []
+    ai_state.opponent_clip_descriptions = {}
+    ai_state.opponent_dialogue = {}
+    ai_state.is_partially_awakened = False
+    ai_state.is_fully_awakened = False
+    ai_state.established_abilities = {}
+    ai_state.used_clips = set()
+    return ai_state
+
+
+def _sync_ai_state_from_boss(ai_state, state: BossState) -> None:
+    """Refresh live boss fields without discarding accumulated AI history."""
+    ai_state.player1_hp = state.player1_hp
+    ai_state.player2_hp = state.boss_hp
+    ai_state.current_turn = state.current_turn
+    ai_state.current_player_id = state.current_player_id
+    ai_state.pending_attack = getattr(state, "pending_attack", None)
+    ai_state.pending_attacker_id = getattr(state, "pending_attacker_id", None)
+    ai_state.status = getattr(state, "status", "active")
+
+
+def _player_attacked_last_turn(state: BossState) -> bool:
+    return bool(
+        state.pending_attack
+        and state.pending_attacker_id == state.player1_id
+    )
+
+
+def _player_last_attack_tier(state: BossState) -> str | None:
+    if _player_attacked_last_turn(state):
+        return state.pending_attack.get("tier")
+    return None

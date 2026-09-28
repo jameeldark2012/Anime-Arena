@@ -127,6 +127,79 @@ def estimate_video_tokens(duration_seconds: float) -> int:
     return max(4000, int(duration_seconds * 1200))
 
 
+def sample_video_frames(
+    video_path: str | Path,
+    *,
+    min_frames: int = 8,
+    max_frames: int = 120,
+    fps: float = 5.0,
+    max_dimension: int | None = None,
+) -> list[Path]:
+    """Sample frames proportionally to clip duration at a fixed target FPS.
+
+    Longer clips naturally get more stills, while very short clips still get a
+    practical minimum. This gives the local fallback model enough motion data for
+    anime attack timing without exploding the frame count on long videos.
+    """
+    path = Path(video_path)
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None or not path.exists():
+        return []
+
+    duration = probe_video_duration(path)
+    if duration <= 0:
+        return []
+
+    sample_count = max(min_frames, min(max_frames, int(round(duration * fps))))
+    if sample_count <= 0:
+        return []
+
+    frame_dir = Path(tempfile.mkdtemp(prefix="ollama_video_frames_"))
+    frame_paths: list[Path] = []
+    for idx in range(sample_count):
+        ts = max(0.1, min(duration - 0.1, duration * (idx + 0.5) / sample_count))
+        frame_path = frame_dir / f"frame_{idx:02d}.jpg"
+        command = [
+            ffmpeg,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-ss",
+            str(ts),
+            "-i",
+            str(path),
+        ]
+        if max_dimension is not None and max_dimension > 0:
+            command.extend([
+                "-vf",
+                f"scale={max_dimension}:{max_dimension}:force_original_aspect_ratio=decrease",
+            ])
+        command.extend([
+            "-frames:v",
+            "1",
+            "-q:v",
+            "2",
+            str(frame_path),
+        ])
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            check=False,
+        )
+        if completed.returncode == 0 and frame_path.exists():
+            frame_paths.append(frame_path)
+
+    if not frame_paths:
+        try:
+            frame_dir.rmdir()
+        except OSError:
+            pass
+        return []
+
+    return frame_paths
+
+
 async def validate_h264_clip(url: str, *, filename: str | None = None) -> tuple[bytes | None, str | None]:
     """Return (clip_bytes, codec_name) for non-H.264 clips only.
 

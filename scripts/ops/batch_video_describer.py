@@ -13,8 +13,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from core.config import settings
 from services.ai import GeminiClient, MediaFile, Message, RateLimiter, normalize_model_name
-from services.ai.gemini import DEFAULT_MODEL
-from services.ai.rate_limiter import DEFAULT_RPM_LIMIT
+from services.ai.llm.gemini import DEFAULT_MODEL
+from services.ai.llm.rate_limiter import DEFAULT_RPM_LIMIT
 from services.media.media_service import (
     collect_videos,
     estimate_video_tokens,

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from services.ai.character_rules import Ability, CharacterRules
+from services.ai.core.character_rules import Ability, CharacterRules
 
 # ---------------------------------------------------------------------------
 # Folder → action type + tier mapping
@@ -48,7 +48,7 @@ def build_clare_rules(clip_root: str | Path) -> CharacterRules:
             "- Taunts about weakness or failure: Clare becomes more focused, not angry. "
             "She may respond with a cold observation about her opponent's own flaws.\n"
             "- Taunts about Teresa or her past: This triggers her core trauma. "
-            "She becomes colder, more ruthless, and may escalate her attacks.\n"
+            "She becomes colder, more ruthless, and will escalate her attacks, it will make her angry and hasten her transformation, it will make her snap immediately and  THIS RULE OVERRIDES EVERY SINGLE RULE OF gradual escalations AND TRANSFORMATIONS bascially you MUST SNAP HERE AND TRANSFORM .\n"
             "- Mocking her abilities: She responds by proving them wrong with precise, "
             "efficient action rather than boasting.\n"
             "- Being called an 'ant' or insignificant: This reflects her own self-image "
@@ -93,6 +93,7 @@ def build_clare_rules(clip_root: str | Path) -> CharacterRules:
                     "Selectively awakens her limbs — legs become hock-jointed for extreme speed, "
                     "left arm becomes a massive claw, right arm grows blade projections. "
                     "Eyes turn golden with slit pupils. Provides a massive boost to speed and power. "
+                    "Visual form: Legs transform completely, face looks more yokai-like. "
                     "IRREVERSIBLE: once used, Clare cannot revert to base form in this fight."
                 ),
             ),
@@ -100,8 +101,7 @@ def build_clare_rules(clip_root: str | Path) -> CharacterRules:
                 name="Partial Regeneration",
                 description=(
                     "Can heal non-fatal wounds and reattach severed limbs by releasing Yoki. "
-                    "Covers minor to moderate damage only. Cannot regenerate from catastrophic wounds "
-                    "without entering partial or full awakening."
+                    "Covers minor to moderate damage only."
                 ),
             ),
             Ability(
@@ -110,6 +110,7 @@ def build_clare_rules(clip_root: str | Path) -> CharacterRules:
                     "By tapping into Rafaela's Soul Link, Clare summons the consciousness and form "
                     "of Teresa from within, unleashing Teresa's peak strength and Yoki output. "
                     "This is Clare's ultimate form and her strongest capability. "
+                    "Visual form: Complete transformation, full Teresa appearance. "
                     "IRREVERSIBLE: once fully awakened, she cannot return to any earlier form."
                 ),
             ),
@@ -129,7 +130,7 @@ def build_clare_rules(clip_root: str | Path) -> CharacterRules:
             ),
             "Medium": (
                 "Quicksword bursts, aura-charged slashes, partial awakening attacks, "
-                "ground-breaking power outputs. Clips labelled 'final form' or 'aura' generally fall here."
+                "ground-breaking power outputs."
             ),
             "Absolute": (
                 "Clare does not currently have confirmed Absolute-tier attacks in her clip library. "
@@ -141,45 +142,23 @@ def build_clare_rules(clip_root: str | Path) -> CharacterRules:
         },
 
         defense_notes=(
-            "Clare's defenses are entirely physical — sword guards, flash steps, jumps, "
+            "Clare's defenses are mostly physical — sword guards, flash steps, jumps, "
             "Yoki-enhanced dodges, and partial awakening speed. "
-            "She has NO ranged shield, NO teleportation, NO area negation. "
-            "A single flash step repositions her a short distance — it does NOT constitute "
-            "escaping a wide-area or Absolute-tier attack. "
-            "Partial Regeneration is a recovery action, not a defense — it cannot block or negate damage. "
-            "Against Medium attacks, an aura defense or flash step is appropriate. "
-            "Against Absolute or higher, she would need multiple large flash steps, full awakening, "
-            "or a synced counter of equivalent power."
+            "She has limited aura guard rated at medium where she detects the aura of the opponent around here and she side steps each time they attack, its a form of partial prediction"
+            "She has NO teleportation. "
         ),
 
         combat_rules=[
-            "Partial awakening (any clip from 'Medium attack' labelled 'final form' or 'FF') "
-            "is IRREVERSIBLE — once used, Clare cannot use base-form-only clips in later turns.",
-            "Full awakening (Teresa Manifestation) is IRREVERSIBLE — once used, treat all subsequent "
-            "actions as coming from the awakened form.",
-            "A single flash step covers a short distance only. It does NOT count as escaping "
-            "an Absolute or Over-Absolute area attack. Multiple flash steps or equivalent movement required.",
-            "Partial Regeneration heals wounds — it is NOT a valid defense against Absolute or higher attacks.",
-            "Windcutter releases no Yoki — opponents relying on Yoki sensing cannot read or react to it.",
-            "Clare can combine actions in one turn (e.g., a flash step into an attack counts as one action). "
-            "However, she may only attack once per turn.",
-            "If the opponent used an illusion and Clare's Eye Closing clip has already been used this match "
-            "before the illusion was revealed, she may be immune to subsequent illusion attempts.",
+            "Visual transformations determine Clare's form"
+            "The clip's visual appearance determines what form she is in.",
+            "Clare has three visual forms:",
+            "1. Normal Form: Appears with human eyes or yellow eyes (base state).",
+            "2. Half-Awakened: Legs transform completely, face looks more yokai-like (partial awakening).",
+            "3. Fully Transformed: Complete transformation (full awakening/Manifestation).",
+            "Once a transformation is shown visually in a clip, all subsequent actions must be consistent "
+            "with that form. A clip's visual appearance determines the form",
+            "CRITICAL: Do NOT assume a 'Medium attack' means half-awakened. The visual appearance in the clip determines the form.",
         ],
 
         category_to_action_type=CLARE_CATEGORY_MAP,
-
-        requires_transformation_for_certain_actions={
-            "Medium attack final form": "Requires partial awakening or full awakening",
-            "Partial Regeneration (advanced)": "Requires some Yoki release or partial awakening",
-            "Rafaela's Martial Arts": "Requires showing kick-based techniques first",
-            "Teresa Manifestation": "Requires full awakening (one-way escalation)",
-        },
-
-        category_prerequisites={
-            "Medium attack final form": ["partial_awakening_shown", "full_awakening_shown"],
-            "Partial Regeneration (advanced)": ["yoki_release_shown", "partial_awakening_shown"],
-            "Flash step combos": ["flash_step_shown"],
-            "Quicksword combos": ["quicksword_shown"],
-        },
     )
