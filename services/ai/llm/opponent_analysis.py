@@ -163,7 +163,9 @@ def _get_whisper_model():
 
     model_name = os.environ.get("OPPONENT_WHISPER_MODEL", "large-v3")
     if _WHISPER_MODEL is None or _WHISPER_MODEL_NAME != model_name:
-        unload_whisper_model()
+        # Only unload if there's actually something to unload
+        if _WHISPER_MODEL is not None:
+            unload_whisper_model()
         _WHISPER_MODEL = WhisperModel(model_name, device="cpu", compute_type="int8")
         _WHISPER_MODEL_NAME = model_name
         debug_event("opponent_speech_to_text_model_loaded", model=model_name)

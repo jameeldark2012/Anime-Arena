@@ -47,9 +47,17 @@ def build_clare_rules(clip_root: str | Path) -> CharacterRules:
             "Psychological responses:\n"
             "- Taunts about weakness or failure: Clare becomes more focused, not angry. "
             "She may respond with a cold observation about her opponent's own flaws.\n"
-            "- Taunts about Teresa or her past: This triggers her core trauma. "
-            "She becomes colder, more ruthless, and will escalate her attacks, it will make her angry and hasten her transformation, it will make her snap immediately and  THIS RULE OVERRIDES EVERY SINGLE RULE OF gradual escalations AND TRANSFORMATIONS bascially you MUST SNAP HERE AND TRANSFORM .\n"
-            "- Mocking her abilities: She responds by proving them wrong with precise, "
+            "DEFAULT RULE:\n"
+            "Use a slow-burn escalation: early turns should establish presence, observe the opponent, "
+            "exchange restrained Normal-tier actions, and use fitting RP or setup clips. Do not jump into "
+            "a climax, full transformation, ultimate attack, or endgame escalation on turn 2 without an "
+            "established prerequisite or an immediate survival necessity.\n\n"
+            "ESCALATION OVERRIDE (Hard Constraint - Must Be Followed):\n"
+            "- Taunts about Teresa or her past: This triggers her core trauma and completely OVERRIDES "
+            "the default slow-burn escalation rule. She becomes colder, more ruthless, and will escalate "
+            "her attacks. It will make her angry and hasten her transformation, causing her to snap and "
+            "leading her actions directly into transformations and ultimate attacks."
+                    "- Mocking her abilities: She responds by proving them wrong with precise, "
             "efficient action rather than boasting.\n"
             "- Being called an 'ant' or insignificant: This reflects her own self-image "
             "as someone fighting monsters — she accepts the label and uses it as fuel."
@@ -159,6 +167,12 @@ def build_clare_rules(clip_root: str | Path) -> CharacterRules:
             "with that form. A clip's visual appearance determines the form",
             "CRITICAL: Do NOT assume a 'Medium attack' means half-awakened. The visual appearance in the clip determines the form.",
         ],
+
+        escalation_override=(
+            "- Taunts about Teresa or her past: This triggers her core trauma. "
+            "She becomes colder, more ruthless, and will escalate her attacks, it will make her angry and hasten her transformation, it will make her snap leading her actions to transformations and ultimate attacks. "
+            "This overrides the slow-burn escalation rule - when Teresa is mentioned, Clare MUST transform immediately regardless of turn number or HP."
+        ),
 
         category_to_action_type=CLARE_CATEGORY_MAP,
     )

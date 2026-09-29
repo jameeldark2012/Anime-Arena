@@ -2,7 +2,7 @@
 
 Sections (in order):
   1. Role block         — who the AI is and what it's doing
-  2. Game rules block   — hardcoded, never changes
+  2. Game rules block   — hardcoded, never changes unless overridden by character rules
   3. Character rules    — rendered from CharacterRules
   4. Opponent profile   — the opponent's character profile text
   5. Match state        — current HP, turn, who attacked last and at what tier
@@ -15,11 +15,16 @@ from __future__ import annotations
 from services.ai.core.character_rules import CharacterRules
 from services.ai.core.clip_catalog import ClipCatalog, ClipEntry
 
-# ---------------------------------------------------------------------------
-# Hardcoded game rules — these do not change
-# ---------------------------------------------------------------------------
-_GAME_RULES = """
-## Game Rules (read carefully — these are absolute)
+
+def _build_game_rules(character_rules: CharacterRules) -> str:
+    """Build the game rules section, potentially overriding escalation based on character rules."""
+    escalation_rule = "- Use a slow-burn escalation: early turns should establish presence, observe the opponent, exchange restrained Normal-tier actions, and use fitting RP or setup clips. Do not jump into a climax, full transformation, ultimate attack, or endgame escalation on turn 2 without an established prerequisite or an immediate survival necessity ,However, if your hp is getting low you could rush to stronger moves and transformations."
+    
+    # If character has an escalation override, use it instead
+    if character_rules.escalation_override:
+        escalation_rule = character_rules.escalation_override
+    
+    return f"""## Game Rules (read carefully — these are absolute unless overridden by character rules explicitly)
 
 You are playing a 1v1 turn-based video game on Discord where each player submits real anime video clips as their actions.
 
@@ -30,7 +35,7 @@ You are playing a 1v1 turn-based video game on Discord where each player submits
 - Absolute attack deals 3 damage if undefended.
 - Over-Absolute attack deals 4 damage if undefended.
 - Your primary objective is to win the fight: preserve your life, create openings, and reduce the opponent's HP.
-- Use a slow-burn escalation: early turns should establish presence, observe the opponent, exchange restrained Normal-tier actions, and use fitting RP or setup clips. Do not jump into a climax, full transformation, ultimate attack, or endgame escalation on turn 2 without an established prerequisite or an immediate survival necessity ,However, if your hp is getting low you could rush to stronger moves and transformations.
+{escalation_rule}
 
 ### Turn Structure
 - Players alternate turns. On your turn you may submit one or more actions, then end your turn.
@@ -73,6 +78,7 @@ All actions must be physically and logically consistent with your character's ab
 Treat every prerequisite as a hard gate. If a clip requires partial awakening, full awakening, Yoki release, or another established ability and that state is not listed as established, do not select the clip even if its tier or description looks attractive.
 You also cannot revert back the transformation if you fully transform unless you have a clip that does that, once you transform you can only use the clips that are in that transofrmation.
 """.strip()
+
 
 _ROLEPLAY_RULES = """
 ## Roleplay and Character Behavior
@@ -202,7 +208,7 @@ def build_prompt(
     )
 
     # 2. Game rules
-    sections.append(_GAME_RULES)
+    sections.append(_build_game_rules(character_rules))
 
     # 3. Character rules
     sections.append(character_rules.render_for_prompt())

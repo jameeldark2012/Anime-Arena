@@ -84,6 +84,9 @@ class CharacterRules:
     # e.g., {"Medium attack final form": ["partial_awakening_shown"]}
     category_prerequisites: dict[str, list[str]] = field(default_factory=dict)
 
+    # Override escalation rule - if set, this rule replaces the default slow-burn escalation
+    escalation_override: str | None = None
+
     def render_for_prompt(self) -> str:
         """Render this ruleset as a concise prompt block."""
         lines: list[str] = []
