@@ -23,11 +23,11 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import Literal
+from typing import Literal, TypeVar
 
 import instructor
 import litellm
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, create_model, field_validator
 
 from core.debug import debug_event
 from services.ai.core.ai_match_state import AIMatchState
@@ -40,7 +40,7 @@ from services.ai.llm.opponent_analysis import (
     unload_whisper_model,
     warm_whisper_model,
 )
-from services.ai.llm.prompt_builder import build_prompt
+from services.ai.llm.prompt_builder import build_prompt, build_trigger_check_prompt
 from services.ai.llm.rate_limiter import estimate_text_tokens
 from services.media.media_service import sample_video_frames
 
@@ -48,6 +48,10 @@ AI_REQUEST_TIMEOUT_SECONDS = 60
 FALLBACK_MODELS = (
     "gemini-3.1-flash-lite",
     "gemini-2.5-flash-lite",
+)
+TRIGGER_CHECK_MODEL = os.environ.get(
+    "TRIGGER_CHECK_MODEL",
+    "gemini/gemini-3.1-flash-lite",
 )
 
 # FALLBACK_MODELS = (
@@ -62,7 +66,10 @@ FALLBACK_MODELS = (
 
 class AIAction(BaseModel):
     action_type: Literal["attack", "defense", "custom"]
-    tier: Literal["Normal", "Medium", "Absolute", "Over-Absolute"] | None = None
+    tier: Literal["Normal", "Medium", "Absolute", "Over-Absolute"] | None = Field(
+        default=None,
+        validate_default=True,
+    )
     clip_filename: str
     reasoning: str
 
@@ -119,13 +126,12 @@ def _ensure_opponent_analysis_count(analyses: list[str], expected_count: int) ->
     return normalized
 
 
-class AITurnDecision(BaseModel):
+class AIActionDecision(BaseModel):
     reasoning: str
     actions: list[AIAction]
     dialogue: str | None = None
     opponent_analysis: list[str] = Field(default_factory=list)
     intro_clip_filename: str | None = None
-    trigger_override: dict[str, bool] | None = None
 
     @field_validator("opponent_analysis", mode="before")
     @classmethod
@@ -145,9 +151,16 @@ class AITurnDecision(BaseModel):
         return v
 
 
+class AITurnDecision(AIActionDecision):
+    trigger_override: dict[str, bool] = Field(default_factory=dict)
+
+
 class AIIntroDecision(BaseModel):
     clip_filename: str
     reasoning: str
+
+
+_ResponseModel = TypeVar("_ResponseModel", bound=BaseModel)
 
 
 # ---------------------------------------------------------------------------
@@ -177,6 +190,49 @@ async def decide_turn(
     opponent_last_attack_tier:
         The declared tier of the opponent's last attack if they attacked.
     """
+    configured_triggers = match_state.character_rules.trigger_overrides or {}
+    pending_triggers = {
+        name: override
+        for name, override in configured_triggers.items()
+        if not (name in match_state.active_trigger_overrides and override["duration"] == "permanent")
+    }
+    trigger_results: dict[str, bool] = {}
+    trigger_used_ollama = False
+    turn_trigger_overrides = set(match_state.active_trigger_overrides)
+    media_content: list[dict] | None = None
+
+    if pending_triggers:
+        trigger_prompt = build_trigger_check_prompt(
+            pending_triggers,
+            match_state.opponent_dialogue.get(match_state.current_turn, []),
+        )
+        for index, item in enumerate(opponent_media or [], 1):
+            action = item.get("action", {})
+            trigger_prompt += (
+                f"\nAttached current-turn opponent video {index}: {item.get('filename', 'video')} "
+                f"(action={action.get('action_type')}, tier={action.get('tier') or 'custom'}). "
+                "Inspect this video for evidence relevant to the trigger conditions."
+            )
+        media_content = await asyncio.to_thread(_upload_opponent_media, opponent_media or [])
+        trigger_results, trigger_used_ollama = await _request_trigger_classification(
+            prompt=trigger_prompt,
+            media_content=media_content,
+            opponent_media=opponent_media or [],
+            trigger_names=list(pending_triggers),
+            match_id=match_state.match_id,
+            turn=match_state.current_turn,
+        )
+        match_state.activate_trigger_overrides(trigger_results)
+        turn_trigger_overrides.update(name for name, satisfied in trigger_results.items() if satisfied)
+    elif configured_triggers:
+        debug_event(
+            "ai_trigger_classification_skipped",
+            match_id=match_state.match_id,
+            turn=match_state.current_turn,
+            reason="all_permanent_triggers_satisfied",
+            active_trigger_overrides=sorted(match_state.active_trigger_overrides),
+        )
+
     prompt = build_prompt(
         character_rules=match_state.character_rules,
         opponent_profile=opponent_profile,
@@ -192,7 +248,7 @@ async def decide_turn(
         available_clips=match_state.clip_catalog,
         opponent_character_name=opponent_character_name,
         previous_ai_dialogues=match_state.previous_ai_dialogues(),
-        active_trigger_overrides=match_state.active_trigger_overrides,
+        active_trigger_overrides=turn_trigger_overrides,
     )
     if opponent_media:
         prompt += _build_opponent_media_instructions(
@@ -219,81 +275,28 @@ async def decide_turn(
         turn_history_count=len(match_state.turn_history_log),
     )
 
-    api_key = os.environ.get("GEMINI_API_KEY", "")
     model = os.environ.get("GOOGLE_MODEL", "gemini/gemini-3.5-flash-lite")
     if not model.startswith("gemini/"):
         model = f"gemini/{model}"
 
-    # Patch LiteLLM client with Instructor for structured output enforcement
-    client = instructor.from_litellm(litellm.completion)
-    media_content = await asyncio.to_thread(_upload_opponent_media, opponent_media or [])
+    if media_content is None:
+        media_content = await asyncio.to_thread(_upload_opponent_media, opponent_media or [])
     message_content: str | list[dict] = prompt
     if media_content:
         message_content = media_content + [{"type": "text", "text": prompt}]
 
     unload_whisper_model()
-    decision: AITurnDecision | None = None
     request_started = time.monotonic()
-    last_error: Exception | None = None
-    for attempt, candidate_model in enumerate(_model_candidates(model)):
-        debug_event(
-            "ai_request_dispatch",
-            match_id=match_state.match_id,
-            turn=match_state.current_turn,
-            model=candidate_model,
-            attempt=attempt + 1,
-            prompt_tokens_estimate=prompt_tokens_estimate,
-        )
-        request_started = time.monotonic()
-        try:
-            decision = await asyncio.wait_for(
-                asyncio.to_thread(
-                    client.chat.completions.create,
-                    model=candidate_model,
-                    messages=[{"role": "user", "content": message_content}],
-                    response_model=AITurnDecision,
-                    api_key=api_key,
-                    max_tokens=1024,
-                    max_retries=3,
-                ),
-                timeout=AI_REQUEST_TIMEOUT_SECONDS,
-            )
-            model = candidate_model
-            break
-        except Exception as exc:
-            last_error = exc
-            has_next_model = attempt + 1 < len(_model_candidates(model))
-            if not has_next_model or not _is_retryable_model_failure(exc):
-                debug_event(
-                    "ai_request_failed",
-                    match_id=match_state.match_id,
-                    turn=match_state.current_turn,
-                    model=candidate_model,
-                    error_type=type(exc).__name__,
-                    error=str(exc),
-                )
-                break
-            debug_event(
-                "ai_model_fallback",
-                match_id=match_state.match_id,
-                turn=match_state.current_turn,
-                failed_model=candidate_model,
-                next_model=_model_candidates(model)[attempt + 1],
-                error_type=type(exc).__name__,
-                error=str(exc),
-            )
-
-    if decision is None:
-        # If Ollama fallback fails, raise its error (not the primary error)
-        decision = await _decide_with_ollama_fallback(
-            prompt=prompt,
-            opponent_media=opponent_media or [],
-            match_id=match_state.match_id,
-            turn=match_state.current_turn,
-            primary_error=last_error,
-        )
-
-    match_state.activate_trigger_overrides(decision.trigger_override or {})
+    decision, action_used_ollama = await _request_with_fallback_chain(
+        prompt=prompt,
+        message_content=message_content,
+        opponent_media=opponent_media or [],
+        response_model=AIActionDecision,
+        primary_model=model,
+        match_id=match_state.match_id,
+        turn=match_state.current_turn,
+        max_tokens=1024,
+    )
 
     debug_event(
         "ai_response_received",
@@ -363,10 +366,142 @@ async def decide_turn(
         opponent_dialogue=match_state.latest_opponent_dialogue(),
     )
     # Gemini succeeded, don't unload Whisper for next turn
-    set_last_turn_used_ollama(False)
+    set_last_turn_used_ollama(trigger_used_ollama or action_used_ollama)
     # Don't load Whisper here - it will be loaded after the turn completes
     # to avoid blocking the turn execution
-    return decision.model_copy(update={"actions": validated_actions})
+    decision_data = decision.model_dump()
+    decision_data.pop("trigger_override", None)
+    return AITurnDecision(
+        **decision_data,
+        trigger_override=trigger_results,
+    ).model_copy(update={"actions": validated_actions})
+
+
+async def _request_trigger_classification(
+    *,
+    prompt: str,
+    media_content: list[dict],
+    opponent_media: list[dict],
+    trigger_names: list[str],
+    match_id: int,
+    turn: int,
+) -> tuple[dict[str, bool], bool]:
+    """Require a yes/no classification for every pending trigger before action selection."""
+    if any(not name.isidentifier() for name in trigger_names):
+        raise ValueError("Trigger names must be valid identifiers for structured classification.")
+
+    flags_model = create_model(
+        f"TriggerFlagsTurn{turn}",
+        **{name: (bool, ...) for name in trigger_names},
+    )
+    response_model = create_model(
+        f"TriggerDecisionTurn{turn}",
+        trigger_override=(flags_model, ...),
+    )
+    api_key = os.environ.get("GEMINI_API_KEY", "")
+    model = TRIGGER_CHECK_MODEL
+    if not model.startswith("gemini/"):
+        model = f"gemini/{model}"
+    message_content: str | list[dict] = prompt
+    if media_content:
+        message_content = media_content + [{"type": "text", "text": prompt}]
+
+    try:
+        response, used_ollama = await _request_with_fallback_chain(
+            prompt=prompt,
+            message_content=message_content,
+            opponent_media=opponent_media,
+            response_model=response_model,
+            primary_model=model,
+            match_id=match_id,
+            turn=turn,
+            max_tokens=256,
+        )
+    except Exception as exc:
+        debug_event(
+            "ai_trigger_classification_failed",
+            match_id=match_id,
+            turn=turn,
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
+        raise RuntimeError("Trigger classification failed after the shared provider fallback chain.") from exc
+
+    result = response.trigger_override.model_dump()
+    debug_event(
+        "ai_triggers_classified",
+        match_id=match_id,
+        turn=turn,
+        model="ollama" if used_ollama else model,
+        trigger_results=result,
+    )
+    return result, used_ollama
+
+
+async def _request_with_fallback_chain(
+    *,
+    prompt: str,
+    message_content: str | list[dict],
+    opponent_media: list[dict],
+    response_model: type[_ResponseModel],
+    primary_model: str,
+    match_id: int,
+    turn: int,
+    max_tokens: int,
+) -> tuple[_ResponseModel, bool]:
+    """Run Gemini candidates, then the shared local Ollama fallback."""
+    client = instructor.from_litellm(litellm.completion)
+    candidates = _model_candidates(primary_model)
+    api_key = os.environ.get("GEMINI_API_KEY", "")
+    last_error: Exception | None = None
+
+    for attempt, candidate_model in enumerate(candidates):
+        debug_event(
+            "ai_request_dispatch",
+            match_id=match_id,
+            turn=turn,
+            model=candidate_model,
+            attempt=attempt + 1,
+            response_schema=response_model.__name__,
+        )
+        try:
+            response = await asyncio.wait_for(
+                asyncio.to_thread(
+                    client.chat.completions.create,
+                    model=candidate_model,
+                    messages=[{"role": "user", "content": message_content}],
+                    response_model=response_model,
+                    api_key=api_key,
+                    max_tokens=max_tokens,
+                    max_retries=3,
+                ),
+                timeout=AI_REQUEST_TIMEOUT_SECONDS,
+            )
+            return response, False
+        except Exception as exc:
+            last_error = exc
+            if not _is_retryable_model_failure(exc):
+                break
+            if attempt + 1 < len(candidates):
+                debug_event(
+                    "ai_model_fallback",
+                    match_id=match_id,
+                    turn=turn,
+                    failed_model=candidate_model,
+                    next_model=candidates[attempt + 1],
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                )
+
+    response = await _decide_with_ollama_fallback(
+        prompt=prompt,
+        opponent_media=opponent_media,
+        match_id=match_id,
+        turn=turn,
+        primary_error=last_error,
+        response_model=response_model,
+    )
+    return response, True
 
 
 async def _decide_with_ollama_fallback(
@@ -376,8 +511,9 @@ async def _decide_with_ollama_fallback(
     match_id: int,
     turn: int,
     primary_error: Exception | None,
-) -> AITurnDecision:
-    """Use local Qwen vision after the configured Gemini chain fails."""
+    response_model: type[_ResponseModel],
+) -> _ResponseModel:
+    """Run the shared local Qwen fallback for any structured AI request."""
     if os.environ.get("OLLAMA_FALLBACK_ENABLED", "true").lower() not in {"1", "true", "yes", "on"}:
         raise RuntimeError("OLLAMA_FALLBACK_ENABLED is disabled.")
 
@@ -426,10 +562,9 @@ async def _decide_with_ollama_fallback(
             media.append(MediaFile(path=frame_path, mime_type="image/jpeg"))
 
     fallback_prompt = (
-        f"The primary Gemini decision service failed with {type(primary_error).__name__ if primary_error else 'an unknown error'}. "
-        "You are the local fallback decision service. Follow the complete battle prompt below exactly. "
-        "These attached frames are uniformly sampled from the opponent's recent videos; analyze them in order and infer the tactic. "
-        "Return valid JSON matching the requested AITurnDecision schema.\n\n"
+        f"The primary Gemini request failed with {type(primary_error).__name__ if primary_error else 'an unknown error'}. "
+        "You are the local fallback model. Follow the request below and return valid JSON matching its requested response schema. "
+        "If image frames are attached, use them as evidence for the request.\n\n"
         + prompt
     )
     text_token_estimate = estimate_text_tokens(fallback_prompt)
@@ -458,7 +593,7 @@ async def _decide_with_ollama_fallback(
             asyncio.to_thread(client.generate, Message(text=fallback_prompt, media=media)),
             timeout=300,
         )
-        decision = _parse_ollama_decision(response.text)
+        decision = _parse_ollama_response(response.text, response_model)
     finally:
         for frame_path in sampled_frame_paths:
             frame_path.unlink(missing_ok=True)
@@ -474,10 +609,8 @@ async def _decide_with_ollama_fallback(
         turn=turn,
         model=model,
         media_count=len(media),
-        action_count=len(decision.actions),
+        response_schema=response_model.__name__,
     )
-    # Ollama was used, so mark for Whisper unloading after the turn completes
-    set_last_turn_used_ollama(True)
     return decision
 
 
@@ -494,18 +627,23 @@ def _estimate_qwen35_frame_tokens(max_dimension: int) -> int:
     return patches_per_side**2 + 2
 
 
-def _parse_ollama_decision(text: str) -> AITurnDecision:
-    """Parse Qwen JSON, tolerating a fenced or surrounding prose response."""
+def _parse_ollama_response(text: str, response_model: type[_ResponseModel]) -> _ResponseModel:
+    """Parse Ollama JSON into whichever response schema the request requires."""
     cleaned = text.strip()
     cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", cleaned, flags=re.IGNORECASE)
     try:
-        return AITurnDecision.model_validate_json(cleaned)
+        return response_model.model_validate_json(cleaned)
     except Exception:
         start = cleaned.find("{")
         end = cleaned.rfind("}")
         if start < 0 or end <= start:
             raise ValueError("Ollama fallback did not return a JSON decision.")
-        return AITurnDecision.model_validate(json.loads(cleaned[start:end + 1]))
+        return response_model.model_validate(json.loads(cleaned[start:end + 1]))
+
+
+def _parse_ollama_decision(text: str) -> AIActionDecision:
+    """Backward-compatible action decision parser."""
+    return _parse_ollama_response(text, AIActionDecision)
 
 
 def _model_candidates(primary_model: str) -> list[str]:

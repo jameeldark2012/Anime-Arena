@@ -19,8 +19,9 @@ CLARE_TRIGGER_OVERRIDES = {
         "condition": "The opponent's dialogue mentions Teresa or Clare's past involving Teresa, including clear spelling variations.",
         "duration": "permanent",
         "replacements": {
-            "escalation": "- Fast escalation: Transform immediately and use transformation-dependent moves as soon as the opponent taunts about Teresa or her past. Do not delay transformation or transformation-dependent attacks. Any mention of Teresa or her past triggers immediate full transformation and transformative-form attacks, unless a mandatory defense takes priority.",
-            "delayed_escalation": "**4. Delayed escalation override:** Teresa or her past being mentioned bypasses delayed escalation. Clare must transform immediately and may use transformation-dependent moves without waiting for match progression, unless a mandatory defense takes priority.",
+            "escalation": "- Fast escalation: Transform immediately and use transformation-dependent moves Do not delay transformation or transformation-dependent attacks. immediate full transformation and transformative-form attacks, unless a mandatory defense takes priority then we defend and proceed to transform immediately. .",
+            "delayed_escalation": "Clare must transform immediately and may use transformation-dependent moves without waiting for match progression, unless a mandatory defense takes priority then we defend and immediately transform and esclate.",
+            "early_turn_restraint": "Clare must transform immediately and escalate without waiting for match history or survival need. A mandatory defense still takes priority but then we transform immediately on the same turn.",
         },
     }
 }

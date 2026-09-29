@@ -18,9 +18,11 @@ from services.ai.core.clip_catalog import ClipCatalog, ClipEntry
 
 _DEFAULT_ESCALATION_RULE = "- Use a slow-burn escalation: early turns should establish presence, observe the opponent, exchange restrained Normal-tier actions, and use fitting RP or setup clips. Do not jump into a climax, full transformation, ultimate attack, or endgame escalation on turn 2 without an established prerequisite or an immediate survival necessity, unless low HP makes stronger actions necessary."
 _DEFAULT_DELAYED_ESCALATION_RULE = "**4. Delayed escalation:** Delay transformations and transformation-dependent moves unless necessary for survival or established by match progression."
+_DEFAULT_EARLY_TURN_RESTRAINT_RULE = "- On early turns, prefer restrained Normal-tier attacks, observation, setup, or grounded RP over transformation-dependent Medium attacks. Escalate only when the match history establishes it or survival requires it."
 _GAME_RULE_DEFAULTS = {
     "escalation": _DEFAULT_ESCALATION_RULE,
     "delayed_escalation": _DEFAULT_DELAYED_ESCALATION_RULE,
+    "early_turn_restraint": _DEFAULT_EARLY_TURN_RESTRAINT_RULE,
 }
 
 
@@ -36,15 +38,16 @@ def _build_game_rules(
         active_rules["delayed_escalation"] = character_rules.delayed_escalation_override
     for trigger_name in active_trigger_overrides or set():
         override = (character_rules.trigger_overrides or {}).get(trigger_name)
-        if override and override["duration"] == "permanent":
+        if override:
             for target, replacement in override["replacements"].items():
                 if target not in active_rules:
                     raise ValueError(f"Unknown game rule replacement target: {target}")
                 active_rules[target] = replacement
     escalation_rule = active_rules["escalation"]
     delayed_escalation = active_rules["delayed_escalation"]
+    early_turn_restraint_rule = active_rules["early_turn_restraint"]
     
-    return f"""## Game Rules (read carefully — these are absolute unless overridden by character rules explicitly)
+    return f"""## Game Rules (read carefully — these are absolute)
 
 You are playing a 1v1 turn-based video game on Discord where each player submits real anime video clips as their actions.
 
@@ -56,6 +59,7 @@ You are playing a 1v1 turn-based video game on Discord where each player submits
 - Over-Absolute attack deals 4 damage if undefended.
 - Your primary objective is to win the fight: preserve your life, create openings, and reduce the opponent's HP.
 {escalation_rule}
+{early_turn_restraint_rule}
 
 ### Turn Structure
 - Players alternate turns. On your turn you may submit one or more actions, then end your turn.
@@ -145,7 +149,7 @@ Respond with valid JSON only. No markdown, no commentary outside the JSON.
     "opponent_analysis": [
         "One concise tactical analysis for each attached opponent video, in attachment order."
     ],
-        "intro_clip_filename": "Optional exact filename from the Intros category, or null."__TRIGGER_OVERRIDE_FIELD__
+        "intro_clip_filename": "Optional exact filename from the Intros category, or null."
 }
 ```
 
@@ -161,7 +165,6 @@ Rules for the output:
 - When the opponent roleplays or speaks, answer the specific scene or emotional beat when meaningful, while keeping any combat action legal.
 - If the opponent's analyzed video contains meaningful spoken dialogue, respond in character when a response is appropriate, but do not force dialogue or an RP clip when the scene does not call for one.
 - If a fitting RP/custom clip naturally answers a meaningful taunt or spoken line, consider including it. Otherwise, a concise in-character dialogue response or a focused combat action is valid.
-- On early turns, prefer restrained Normal-tier attacks, observation, setup, or grounded RP over transformation-dependent Medium attacks. Escalate only when the match history establishes it or survival requires it.
 - When opponent videos are attached, return one `opponent_analysis` entry per video before choosing actions.
 - Analyze only videos attached to this request. Never copy an older description from full-match memory into `opponent_analysis`.
 - If no opponent videos are attached, return an empty `opponent_analysis` list.
@@ -340,20 +343,11 @@ def build_prompt(
             hist_lines.append(f"- {entry}")
         sections.append("\n".join(hist_lines))
 
-    # Trigger checks and output fields are derived from the character's override map.
-    pending_trigger_overrides = {
-        name: override
-        for name, override in (character_rules.trigger_overrides or {}).items()
-        if not (name in (active_trigger_overrides or set()) and override["duration"] == "permanent")
-    }
-    if pending_trigger_overrides:
-        sections.append(_build_trigger_check_section(pending_trigger_overrides, opponent_dialogue))
-
     # 11. Available clips
     sections.append(_build_available_clips_section(available_clips, character_rules, established_abilities))
 
     # 12. Output schema
-    sections.append(_build_output_schema(pending_trigger_overrides))
+    sections.append(_OUTPUT_SCHEMA)
 
     if character_rules.name == "Zeke" and not character_rules.has_defense:
         sections.append(
@@ -423,9 +417,6 @@ def _build_available_clips_section(catalog: ClipCatalog, rules: CharacterRules, 
 
         for clip in available_in_category:
             desc = clip.description or "(no description)"
-            # Truncate very long descriptions to keep prompt concise
-            if len(desc) > 200:
-                desc = desc[:197] + "..."
             lines.append(f"- `{clip.filename}` — {desc}")
 
     # Add warning if using clips from transformed state before transformation is established
@@ -438,41 +429,30 @@ def _build_available_clips_section(catalog: ClipCatalog, rules: CharacterRules, 
     return "\n".join(lines)
 
 
-def _build_output_schema(trigger_overrides: dict[str, dict[str, str]]) -> str:
-    """Add a boolean output field for each configured trigger override."""
-    if trigger_overrides:
-        trigger_fields = ",\n    \"trigger_override\": {\n" + ",\n".join(
-            f'      "{trigger_name}": true or false'
-            for trigger_name in trigger_overrides
-        ) + "\n    }"
-    else:
-        trigger_fields = ""
-    return _OUTPUT_SCHEMA.replace("__TRIGGER_OVERRIDE_FIELD__", trigger_fields)
-
-
-def _build_trigger_check_section(
-    trigger_overrides: dict[str, dict[str, str]],
+def build_trigger_check_prompt(
+    trigger_overrides: dict[str, dict[str, object]],
     opponent_dialogue: list[str],
 ) -> str:
-    """Render pending trigger checks and their configured replacement rules."""
-    lines = ["## Trigger Checks"]
+    """Create a yes/no-only prompt for deciding configured trigger conditions."""
+    lines = [
+        "Determine whether each configured trigger condition is satisfied by the opponent's current-turn dialogue or attached media.",
+        "This task is only trigger classification. Do not choose actions, evaluate whether a replacement rule is desirable, or explain your answer.",
+        "Return valid JSON only, with one boolean for every trigger name, in this shape:",
+        '{"trigger_override": {"<trigger_name>": true}}',
+        "Use true when the condition is satisfied and false otherwise. Every listed trigger must receive an answer.",
+        "Required trigger names: " + ", ".join(trigger_overrides),
+        "",
+        "Opponent dialogue this turn:",
+    ]
+    if opponent_dialogue:
+        lines.extend(f'{index}. "{line}"' for index, line in enumerate(opponent_dialogue, 1))
+    else:
+        lines.append("(No opponent dialogue text was provided; inspect attached media if present.)")
+    lines.append("\nTrigger conditions:")
     for trigger_name, override in trigger_overrides.items():
         lines.extend([
             "",
             f"### {trigger_name.replace('_', ' ').title()}",
             f"Condition: {override['condition']}",
-            f"Check this condition against the opponent's dialogue this turn. Set `trigger_override.{trigger_name}` to true if it is satisfied, otherwise false.",
-            "",
-            f"Duration: {override['duration']}. Apply the replacement to this decision when triggered.",
         ])
-        for target, replacement in override["replacements"].items():
-            lines.extend([
-                f"Rule to replace: `{target}`",
-                f"Replacement rule: {replacement}",
-            ])
-        lines.extend(["", "Opponent dialogue this turn:"])
-        if opponent_dialogue:
-            lines.extend(f'{index}. "{line}"' for index, line in enumerate(opponent_dialogue, 1))
-        else:
-            lines.append("(No opponent dialogue this turn)")
     return "\n".join(lines)

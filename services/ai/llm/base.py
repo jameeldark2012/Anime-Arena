@@ -11,6 +11,7 @@ class MediaFile:
     """A local file to be passed alongside a prompt."""
     path: Path
     mime_type: str | None = None  # auto-detected if None
+    label: str | None = None
 
 
 @dataclass

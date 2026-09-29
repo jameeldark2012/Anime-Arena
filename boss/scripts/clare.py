@@ -283,12 +283,8 @@ class ClareBossScript(BossScript):
 
     def on_victory(self, state: BossState) -> Path | None:
         rp_dir = CLARE_CLIPS_ROOT / "RP"
-        candidates = ["I wont forgive you, ill kill you.mp4", "Climax RP GOAT AURA I WILL KILL U.mp4"]
-        for name in candidates:
-            p = rp_dir / name
-            if p.exists():
-                return p
-        return None
+        victory_clip = rp_dir / "Sword dripping blood standing behind killed one.mp4"
+        return victory_clip if victory_clip.exists() else None
 
     def on_defeat(self, state: BossState) -> Path | None:
         rp_dir = CLARE_CLIPS_ROOT / "RP"

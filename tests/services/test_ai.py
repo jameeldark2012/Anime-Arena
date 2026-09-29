@@ -16,12 +16,14 @@ from boss.scripts.zeke import ZekeScript
 from services.ai import RateLimiter
 from services.ai.core.ai_match_state import AIMatchState
 from services.ai.llm import ai_player
-from services.ai.llm.ai_player import AIAction, AITurnDecision
+from services.ai.llm import gemini as gemini_module
+from services.ai.llm.ai_player import AIAction, AIActionDecision, AITurnDecision
 from services.ai.llm.base import MediaFile, Message
+from services.ai.llm.gemini import GeminiClient
 from services.ai.llm import opponent_analysis
 from services.ai.llm.ollama import OllamaClient
 from services.ai.llm.opponent_analysis import prepare_opponent_media
-from services.ai.llm.prompt_builder import build_prompt
+from services.ai.llm.prompt_builder import build_prompt, build_trigger_check_prompt
 from services.ai.core.character_rules import CharacterRules
 from services.ai.core.clip_catalog import ClipCatalog, ClipEntry, load_catalog
 from services.match.match_manager_service import MatchManagerService
@@ -32,6 +34,15 @@ def test_rate_limiter_applies_safety_margin_to_tpm_and_rpm():
 
     assert rate_limiter.effective_rpm == 12
     assert rate_limiter.effective_tpm == 52000
+
+
+def test_combat_action_requires_tier_when_tier_is_omitted():
+    with pytest.raises(ValueError, match="tier is required for action_type 'attack'"):
+        AIAction.model_validate({
+            "action_type": "attack",
+            "clip_filename": "slash.mp4",
+            "reasoning": "Attack.",
+        })
 
 
 def test_clip_catalog_excludes_used_clips_from_available_lookup():
@@ -147,6 +158,7 @@ def test_permanent_trigger_override_latches_and_temporary_override_does_not():
                 "replacements": {
                     "escalation": "PERMANENT ESCALATION REPLACEMENT",
                     "delayed_escalation": "PERMANENT DELAYED ESCALATION REPLACEMENT",
+                    "early_turn_restraint": "PERMANENT EARLY-TURN REPLACEMENT",
                 },
             },
             "temporary_trigger": {
@@ -186,9 +198,175 @@ def test_permanent_trigger_override_latches_and_temporary_override_does_not():
     assert state.active_trigger_overrides == {"permanent_trigger"}
     assert "PERMANENT ESCALATION REPLACEMENT" in prompt
     assert "PERMANENT DELAYED ESCALATION REPLACEMENT" in prompt
-    assert '"permanent_trigger": true or false' not in prompt
-    assert '"temporary_trigger": true or false' in prompt
-    assert "TEMPORARY RULE REPLACEMENT" in prompt
+    assert "PERMANENT EARLY-TURN REPLACEMENT" in prompt
+    assert "On early turns, prefer restrained Normal-tier attacks" not in prompt
+    assert "trigger_override" not in prompt
+
+    trigger_prompt = build_trigger_check_prompt(
+        {"temporary_trigger": rules.trigger_overrides["temporary_trigger"]},
+        ["The temporary trigger was mentioned."],
+    )
+    assert '"<trigger_name>": true' in trigger_prompt
+    assert "The opponent mentions the temporary trigger." in trigger_prompt
+    assert "TEMPORARY RULE REPLACEMENT" not in trigger_prompt
+
+
+def test_decide_turn_classifies_trigger_before_building_action_prompt(monkeypatch):
+    rules = CharacterRules(
+        name="Test",
+        series="Example",
+        clip_root=Path("E:/tmp"),
+        personality="Focused and direct.",
+        category_to_action_type={"Normal Attack": {"action_type": "attack", "tier": "Normal"}},
+        trigger_overrides={
+            "teresa_mentioned": {
+                "condition": "The opponent mentions Teresa.",
+                "duration": "permanent",
+                "replacements": {
+                    "escalation": "TERESA ESCALATION REPLACEMENT",
+                    "delayed_escalation": "TERESA DELAYED ESCALATION REPLACEMENT",
+                },
+            },
+            "second_permanent_trigger": {
+                "condition": "A second permanent condition is satisfied.",
+                "duration": "permanent",
+                "replacements": {"early_turn_restraint": "SECOND PERMANENT REPLACEMENT"},
+            },
+        },
+    )
+    catalog = ClipCatalog(root=Path("E:/tmp"))
+    catalog.clips_by_category["Normal Attack"] = [
+        ClipEntry(Path("E:/tmp/slash.mp4"), "slash.mp4", "Normal Attack", "slash")
+    ]
+    state = AIMatchState(1, 2, 3, 4, rules, catalog)
+    state.current_turn = 1
+    state.opponent_dialogue[1] = ["Teresa was stronger than you."]
+    prompts: list[str] = []
+    trigger_check_count = 0
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            nonlocal trigger_check_count
+            prompts.append(kwargs["messages"][0]["content"])
+            response_model = kwargs["response_model"]
+            if response_model.__name__.startswith("TriggerDecisionTurn"):
+                trigger_check_count += 1
+                trigger_names = response_model.model_fields["trigger_override"].annotation.model_fields
+                trigger_results = {
+                    name: name == "teresa_mentioned" or trigger_check_count > 1
+                    for name in trigger_names
+                }
+                return response_model.model_validate({"trigger_override": trigger_results})
+            return AIActionDecision(
+                reasoning="The trigger replacement rules are active.",
+                actions=[AIAction(
+                    action_type="attack",
+                    tier="Normal",
+                    clip_filename="slash.mp4",
+                    reasoning="A legal attack follows the active rules.",
+                )],
+            )
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=FakeCompletions()))
+    monkeypatch.setattr(ai_player.instructor, "from_litellm", lambda _: client)
+    monkeypatch.setenv("GOOGLE_MODEL", "gemini/gemini-3.5-flash-lite")
+    monkeypatch.delenv("TRIGGER_CHECK_MODEL", raising=False)
+    requested_models: list[str] = []
+
+    def model_candidates(primary_model):
+        requested_models.append(primary_model)
+        return [primary_model]
+
+    monkeypatch.setattr(ai_player, "_model_candidates", model_candidates)
+    monkeypatch.setattr(ai_player, "_upload_opponent_media", lambda _: [])
+    monkeypatch.setattr(ai_player, "unload_whisper_model", lambda: None)
+
+    result = asyncio.run(ai_player.decide_turn(state))
+
+    assert len(prompts) == 2
+    assert "Required trigger names: teresa_mentioned" in prompts[0]
+    assert "only trigger classification" in prompts[0]
+    assert "TERESA ESCALATION REPLACEMENT" not in prompts[0]
+    assert "TERESA ESCALATION REPLACEMENT" in prompts[1]
+    assert "TERESA DELAYED ESCALATION REPLACEMENT" in prompts[1]
+    assert "trigger_override" not in prompts[1]
+    assert result.trigger_override == {
+        "teresa_mentioned": True,
+        "second_permanent_trigger": False,
+    }
+    assert state.active_trigger_overrides == {"teresa_mentioned"}
+    assert requested_models == [
+        "gemini/gemini-3.1-flash-lite",
+        "gemini/gemini-3.5-flash-lite",
+    ]
+
+    state.current_turn = 2
+    second_result = asyncio.run(ai_player.decide_turn(state))
+
+    assert second_result.trigger_override == {"second_permanent_trigger": True}
+    assert state.active_trigger_overrides == {"teresa_mentioned", "second_permanent_trigger"}
+    assert "Required trigger names: second_permanent_trigger" in prompts[2]
+    assert requested_models[2:4] == [
+        "gemini/gemini-3.1-flash-lite",
+        "gemini/gemini-3.5-flash-lite",
+    ]
+
+    state.current_turn = 3
+    asyncio.run(ai_player.decide_turn(state))
+
+    assert len(prompts) == 5
+    assert "Required trigger names" not in prompts[4]
+    assert requested_models[-1] == "gemini/gemini-3.5-flash-lite"
+
+
+def test_trigger_classifier_uses_shared_local_fallback_after_gemini_candidates(monkeypatch):
+    requested_models: list[str] = []
+    local_fallback_calls: list[dict] = []
+    opponent_media = [{
+        "filename": "opponent.mp4",
+        "path": Path("E:/tmp/opponent.mp4"),
+        "action": {"action_type": "talk", "tier": None},
+    }]
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            requested_models.append(kwargs["model"])
+            raise RuntimeError("503 Service Unavailable")
+
+    async def fake_local_fallback(**kwargs):
+        local_fallback_calls.append(kwargs)
+        return kwargs["response_model"].model_validate({
+            "trigger_override": {"teresa_mentioned": True},
+        })
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=FakeCompletions()))
+    monkeypatch.setattr(ai_player.instructor, "from_litellm", lambda _: client)
+    monkeypatch.setattr(
+        ai_player,
+        "_model_candidates",
+        lambda _: ["gemini/gemini-3.1-flash-lite", "gemini/gemini-2.5-flash-lite"],
+    )
+    monkeypatch.setattr(ai_player, "_is_retryable_model_failure", lambda _: True)
+    monkeypatch.setattr(ai_player, "_decide_with_ollama_fallback", fake_local_fallback)
+
+    results, used_ollama = asyncio.run(ai_player._request_trigger_classification(
+        prompt="Classify the trigger.",
+        media_content=[],
+        opponent_media=opponent_media,
+        trigger_names=["teresa_mentioned"],
+        match_id=1,
+        turn=1,
+    ))
+
+    assert requested_models == [
+        "gemini/gemini-3.1-flash-lite",
+        "gemini/gemini-2.5-flash-lite",
+    ]
+    assert results == {"teresa_mentioned": True}
+    assert used_ollama is True
+    assert len(local_fallback_calls) == 1
+    assert local_fallback_calls[0]["opponent_media"] == opponent_media
+    assert local_fallback_calls[0]["response_model"].__name__.startswith("TriggerDecisionTurn")
 
 
 def test_zeke_fallback_attack_excludes_catalog_used_clips(tmp_path, monkeypatch):
@@ -233,6 +411,17 @@ def test_clare_match_start_intro_closes_intro_choice_for_rest_of_match():
     assert script._intro_played is True
     assert catalog.clips_for("Intros") == []
     assert script._resolve_clip_path("second-intro.mp4") is None
+
+
+def test_clare_victory_uses_requested_rp_clip(tmp_path, monkeypatch):
+    rp_dir = tmp_path / "RP"
+    rp_dir.mkdir()
+    victory_clip = rp_dir / "Sword dripping blood standing behind killed one.mp4"
+    victory_clip.touch()
+    monkeypatch.setattr("boss.scripts.clare.CLARE_CLIPS_ROOT", tmp_path)
+    script = ClareBossScript.__new__(ClareBossScript)
+
+    assert script.on_victory(None) == victory_clip
 
 
 def test_clare_turn_intro_blocks_other_intro_actions_in_same_turn():
@@ -349,6 +538,128 @@ def test_prompt_keeps_current_turn_evidence_separate_from_recent_memory():
     assert "Historical memory - opponent analysis" in prompt
     assert "Analyze only videos attached to this request" in prompt
     assert "If no opponent videos are attached, return an empty `opponent_analysis` list." in prompt
+
+
+def test_gemini_client_reuses_uploaded_reference_images(monkeypatch, tmp_path):
+    image_path = tmp_path / "reference.png"
+    image_path.write_bytes(b"image")
+    uploads = []
+
+    def fake_create_file(**kwargs):
+        uploads.append(kwargs["file"].name)
+        return SimpleNamespace(id=f"reference-{len(uploads)}")
+
+    monkeypatch.setattr(gemini_module.litellm, "create_file", fake_create_file)
+    client = GeminiClient(api_key="test-key", model="gemini-3.1-flash-lite")
+    media_file = MediaFile(path=image_path)
+
+    first_upload = client._upload_file(media_file)
+    second_upload = client._upload_file(media_file)
+
+    assert first_upload == second_upload
+    assert len(uploads) == 1
+
+
+def test_gemini_client_places_media_labels_before_their_files(monkeypatch, tmp_path):
+    video_path = tmp_path / "target.mp4"
+    reference_path = tmp_path / "reference.png"
+    video_path.write_bytes(b"video")
+    reference_path.write_bytes(b"image")
+    media_content = []
+    upload_index = 0
+    retry_options = []
+
+    class RecordingLimiter:
+        effective_rpm = 12
+
+        def __init__(self):
+            self.calls = []
+
+        def wait(self, estimated_tokens=0):
+            self.calls.append(estimated_tokens)
+
+    def fake_create_file(**kwargs):
+        nonlocal upload_index
+        upload_index += 1
+        retry_options.append(kwargs.get("num_retries"))
+        return SimpleNamespace(id=f"file-{upload_index}")
+
+    def fake_completion(**kwargs):
+        media_content.extend(kwargs["messages"][0]["content"])
+        retry_options.append(kwargs.get("num_retries"))
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))],
+            model_dump=lambda: {},
+        )
+
+    monkeypatch.setattr(gemini_module.litellm, "create_file", fake_create_file)
+    monkeypatch.setattr(gemini_module.litellm, "completion", fake_completion)
+    limiter = RecordingLimiter()
+    client = GeminiClient(api_key="test-key", model="gemini-3.1-flash-lite", rate_limiter=limiter)
+    message = Message(
+        text="Classify the target only.",
+        media=[
+            MediaFile(path=video_path, label="TARGET VIDEO"),
+            MediaFile(path=reference_path, label="REFERENCE STILL ONLY"),
+        ],
+    )
+
+    response = client.generate(message)
+
+    assert response.text == "ok"
+    assert [part.get("text") or part.get("type") for part in media_content] == [
+        "TARGET VIDEO",
+        "file",
+        "REFERENCE STILL ONLY",
+        "file",
+        "Classify the target only.",
+    ]
+    assert len(limiter.calls) == 3
+    assert client.api_request_count == 3
+    assert all(tokens >= 0 for tokens in limiter.calls)
+    assert all(retries == 0 for retries in retry_options)
+
+
+def test_available_clip_prompt_keeps_full_long_description():
+    rules = CharacterRules(
+        name="Clare",
+        series="Claymore",
+        clip_root=Path("E:/tmp"),
+        personality="Stoic.",
+        category_to_action_type={
+            "Medium attack": {"action_type": "attack", "tier": "Medium"},
+        },
+    )
+    catalog = ClipCatalog(root=Path("E:/tmp"))
+    full_description = (
+        "Clare uses awakened blade arms. "
+        + "Her fully awakened form has distorted features and massive wings. " * 8
+    )
+    catalog.clips_by_category["Medium attack"] = [
+        ClipEntry(
+            Path("E:/tmp/flash slashes.mp4"),
+            "flash slashes.mp4",
+            "Medium attack",
+            full_description,
+        ),
+    ]
+
+    prompt = build_prompt(
+        character_rules=rules,
+        opponent_profile=None,
+        my_hp=4,
+        opponent_hp=4,
+        turn_number=4,
+        opponent_attacked_last_turn=False,
+        opponent_last_attack_tier=None,
+        opponent_last_attack_descriptions=[],
+        opponent_dialogue=[],
+        established_abilities={},
+        turn_history=[],
+        available_clips=catalog,
+    )
+
+    assert full_description in prompt
 
 
 def test_translated_clip_speech_is_in_current_turn_dialogue_section():
