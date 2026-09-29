@@ -174,5 +174,10 @@ def build_clare_rules(clip_root: str | Path) -> CharacterRules:
             "This overrides the slow-burn escalation rule - when Teresa is mentioned, Clare MUST transform immediately regardless of turn number or HP."
         ),
 
+        delayed_escalation_override=(
+            "- Fast escalation: Transform immediately and use transformation-dependent moves as soon as the opponent taunts about Teresa or her past. Do not delay transformation or transformation-dependent attacks. The override trigger is the same as the escalation override - any mention of Teresa or her past triggers immediate full transformation and absolute-tier attacks.\n\n"
+            "4. Delayed escalation: Delay transformations and transformation-dependent moves unless necessary for survival or established by match progression."
+        ),
+
         category_to_action_type=CLARE_CATEGORY_MAP,
     )

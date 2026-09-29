@@ -87,6 +87,9 @@ class CharacterRules:
     # Override escalation rule - if set, this rule replaces the default slow-burn escalation
     escalation_override: str | None = None
 
+    # Override delayed escalation rule - if set, this rule replaces the default delayed escalation
+    delayed_escalation_override: str | None = None
+
     def render_for_prompt(self) -> str:
         """Render this ruleset as a concise prompt block."""
         lines: list[str] = []

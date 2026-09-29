@@ -24,6 +24,13 @@ def _build_game_rules(character_rules: CharacterRules) -> str:
     if character_rules.escalation_override:
         escalation_rule = character_rules.escalation_override
     
+    # Build delayed escalation rule section
+    delayed_escalation = (
+        "**4. Delayed escalation:** Delay transformations and transformation-dependent moves unless necessary for survival or established by match progression."
+    )
+    if character_rules.delayed_escalation_override:
+        delayed_escalation = character_rules.delayed_escalation_override
+    
     return f"""## Game Rules (read carefully — these are absolute unless overridden by character rules explicitly)
 
 You are playing a 1v1 turn-based video game on Discord where each player submits real anime video clips as their actions.
@@ -66,7 +73,7 @@ You are playing a 1v1 turn-based video game on Discord where each player submits
 1. **Transformation requires RP // appropiate clip:** To enter a new form, you MUST first submit an RP/clip that visually/verbally indicates the transformation is beginning or completing.
 2. **Visuals determine form:** The actual video clip determines which state the character is in — not tier, action type, or assumptions.
 3. **Once transformed, stay transformed:** After ascending to a new form in a clip, you can ONLY use clips from that form until you have a clip that reverts the state.
-4. **Delayed escalation:** Delay transformations and transformation-dependent moves unless necessary for survival or established by match progression.
+{delayed_escalation}
 5. **Unexpected attacks:** If forced to transform unexpectedly (e.g., to defend against a surprise attack):
    - Mark the transformation RP clip as "defense"
    - Use "custom" for the actual defensive transformation move
