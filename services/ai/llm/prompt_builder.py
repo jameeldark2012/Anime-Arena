@@ -16,20 +16,33 @@ from services.ai.core.character_rules import CharacterRules
 from services.ai.core.clip_catalog import ClipCatalog, ClipEntry
 
 
-def _build_game_rules(character_rules: CharacterRules) -> str:
+_DEFAULT_ESCALATION_RULE = "- Use a slow-burn escalation: early turns should establish presence, observe the opponent, exchange restrained Normal-tier actions, and use fitting RP or setup clips. Do not jump into a climax, full transformation, ultimate attack, or endgame escalation on turn 2 without an established prerequisite or an immediate survival necessity, unless low HP makes stronger actions necessary."
+_DEFAULT_DELAYED_ESCALATION_RULE = "**4. Delayed escalation:** Delay transformations and transformation-dependent moves unless necessary for survival or established by match progression."
+_GAME_RULE_DEFAULTS = {
+    "escalation": _DEFAULT_ESCALATION_RULE,
+    "delayed_escalation": _DEFAULT_DELAYED_ESCALATION_RULE,
+}
+
+
+def _build_game_rules(
+    character_rules: CharacterRules,
+    active_trigger_overrides: set[str] | None = None,
+) -> str:
     """Build the game rules section, potentially overriding escalation based on character rules."""
-    escalation_rule = "- Use a slow-burn escalation: early turns should establish presence, observe the opponent, exchange restrained Normal-tier actions, and use fitting RP or setup clips. Do not jump into a climax, full transformation, ultimate attack, or endgame escalation on turn 2 without an established prerequisite or an immediate survival necessity ,However, if your hp is getting low you could rush to stronger moves and transformations."
-    
-    # If character has an escalation override, use it instead
+    active_rules = dict(_GAME_RULE_DEFAULTS)
     if character_rules.escalation_override:
-        escalation_rule = character_rules.escalation_override
-    
-    # Build delayed escalation rule section
-    delayed_escalation = (
-        "**4. Delayed escalation:** Delay transformations and transformation-dependent moves unless necessary for survival or established by match progression."
-    )
+        active_rules["escalation"] = character_rules.escalation_override
     if character_rules.delayed_escalation_override:
-        delayed_escalation = character_rules.delayed_escalation_override
+        active_rules["delayed_escalation"] = character_rules.delayed_escalation_override
+    for trigger_name in active_trigger_overrides or set():
+        override = (character_rules.trigger_overrides or {}).get(trigger_name)
+        if override and override["duration"] == "permanent":
+            for target, replacement in override["replacements"].items():
+                if target not in active_rules:
+                    raise ValueError(f"Unknown game rule replacement target: {target}")
+                active_rules[target] = replacement
+    escalation_rule = active_rules["escalation"]
+    delayed_escalation = active_rules["delayed_escalation"]
     
     return f"""## Game Rules (read carefully — these are absolute unless overridden by character rules explicitly)
 
@@ -132,7 +145,7 @@ Respond with valid JSON only. No markdown, no commentary outside the JSON.
     "opponent_analysis": [
         "One concise tactical analysis for each attached opponent video, in attachment order."
     ],
-    "intro_clip_filename": "Optional exact filename from the Intros category, or null."
+        "intro_clip_filename": "Optional exact filename from the Intros category, or null."__TRIGGER_OVERRIDE_FIELD__
 }
 ```
 
@@ -178,6 +191,7 @@ def build_prompt(
     available_clips: ClipCatalog,
     opponent_character_name: str = "the opponent",
     previous_ai_dialogues: list[str] | None = None,
+    active_trigger_overrides: set[str] | None = None,
 ) -> str:
     """Assemble and return the full prompt string.
 
@@ -215,7 +229,7 @@ def build_prompt(
     )
 
     # 2. Game rules
-    sections.append(_build_game_rules(character_rules))
+    sections.append(_build_game_rules(character_rules, active_trigger_overrides))
 
     # 3. Character rules
     sections.append(character_rules.render_for_prompt())
@@ -326,11 +340,20 @@ def build_prompt(
             hist_lines.append(f"- {entry}")
         sections.append("\n".join(hist_lines))
 
+    # Trigger checks and output fields are derived from the character's override map.
+    pending_trigger_overrides = {
+        name: override
+        for name, override in (character_rules.trigger_overrides or {}).items()
+        if not (name in (active_trigger_overrides or set()) and override["duration"] == "permanent")
+    }
+    if pending_trigger_overrides:
+        sections.append(_build_trigger_check_section(pending_trigger_overrides, opponent_dialogue))
+
     # 11. Available clips
     sections.append(_build_available_clips_section(available_clips, character_rules, established_abilities))
 
     # 12. Output schema
-    sections.append(_OUTPUT_SCHEMA)
+    sections.append(_build_output_schema(pending_trigger_overrides))
 
     if character_rules.name == "Zeke" and not character_rules.has_defense:
         sections.append(
@@ -412,4 +435,44 @@ def _build_available_clips_section(catalog: ClipCatalog, rules: CharacterRules, 
         for ability, requirements in rules.requires_transformation_for_certain_actions.items():
             lines.append(f"- {ability}: {requirements}")
 
+    return "\n".join(lines)
+
+
+def _build_output_schema(trigger_overrides: dict[str, dict[str, str]]) -> str:
+    """Add a boolean output field for each configured trigger override."""
+    if trigger_overrides:
+        trigger_fields = ",\n    \"trigger_override\": {\n" + ",\n".join(
+            f'      "{trigger_name}": true or false'
+            for trigger_name in trigger_overrides
+        ) + "\n    }"
+    else:
+        trigger_fields = ""
+    return _OUTPUT_SCHEMA.replace("__TRIGGER_OVERRIDE_FIELD__", trigger_fields)
+
+
+def _build_trigger_check_section(
+    trigger_overrides: dict[str, dict[str, str]],
+    opponent_dialogue: list[str],
+) -> str:
+    """Render pending trigger checks and their configured replacement rules."""
+    lines = ["## Trigger Checks"]
+    for trigger_name, override in trigger_overrides.items():
+        lines.extend([
+            "",
+            f"### {trigger_name.replace('_', ' ').title()}",
+            f"Condition: {override['condition']}",
+            f"Check this condition against the opponent's dialogue this turn. Set `trigger_override.{trigger_name}` to true if it is satisfied, otherwise false.",
+            "",
+            f"Duration: {override['duration']}. Apply the replacement to this decision when triggered.",
+        ])
+        for target, replacement in override["replacements"].items():
+            lines.extend([
+                f"Rule to replace: `{target}`",
+                f"Replacement rule: {replacement}",
+            ])
+        lines.extend(["", "Opponent dialogue this turn:"])
+        if opponent_dialogue:
+            lines.extend(f'{index}. "{line}"' for index, line in enumerate(opponent_dialogue, 1))
+        else:
+            lines.append("(No opponent dialogue this turn)")
     return "\n".join(lines)

@@ -57,6 +57,7 @@ class AIMatchState(MatchState):
 
         self.character_rules: CharacterRules = character_rules
         self.clip_catalog: ClipCatalog = clip_catalog
+        self.active_trigger_overrides: set[str] = set()
 
         # Structured turn log — each entry is a plain-text summary of a completed turn.
         # Each summary contains both what the opponent did and how the AI answered,
@@ -250,3 +251,10 @@ class AIMatchState(MatchState):
     def ability_is_established(self, ability_name: str) -> bool:
         """Check if an ability has been established/shown."""
         return self.established_abilities.get(ability_name, False)
+
+    def activate_trigger_overrides(self, trigger_results: dict[str, bool]) -> None:
+        """Latch satisfied permanent trigger overrides for the rest of this match."""
+        for trigger_name, satisfied in trigger_results.items():
+            override = (self.character_rules.trigger_overrides or {}).get(trigger_name)
+            if satisfied and override and override["duration"] == "permanent":
+                self.active_trigger_overrides.add(trigger_name)

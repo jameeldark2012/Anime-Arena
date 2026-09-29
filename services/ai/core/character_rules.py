@@ -10,9 +10,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Literal, TypedDict
 
 Tier = Literal["Normal", "Medium", "Absolute", "Over-Absolute"]
+
+
+class TriggerOverride(TypedDict):
+    condition: str
+    duration: Literal["temporary", "permanent"]
+    replacements: dict[str, str]
 
 
 @dataclass
@@ -89,6 +95,9 @@ class CharacterRules:
 
     # Override delayed escalation rule - if set, this rule replaces the default delayed escalation
     delayed_escalation_override: str | None = None
+
+    # Keyed by trigger name; each value defines its condition and rule replacement.
+    trigger_overrides: dict[str, TriggerOverride] | None = None
 
     def render_for_prompt(self) -> str:
         """Render this ruleset as a concise prompt block."""

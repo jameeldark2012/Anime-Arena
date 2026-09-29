@@ -361,6 +361,7 @@ def _build_ai_state_from_boss(state: BossState, rules, catalog) -> "AIMatchState
     ai_state.status = getattr(state, "status", "active")
     ai_state.character_rules = rules
     ai_state.clip_catalog = catalog
+    ai_state.active_trigger_overrides = set()
     ai_state.turn_history_log = []
     ai_state.turn_context_log = []
     ai_state.opponent_clip_descriptions = {}

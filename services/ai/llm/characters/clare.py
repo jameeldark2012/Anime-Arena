@@ -11,6 +11,21 @@ from pathlib import Path
 from services.ai.core.character_rules import Ability, CharacterRules
 
 # ---------------------------------------------------------------------------
+# Trigger overrides dictionary
+# ---------------------------------------------------------------------------
+# Key = trigger name; value defines its condition and rule replacement.
+CLARE_TRIGGER_OVERRIDES = {
+    "taunts_about_teresa": {
+        "condition": "The opponent's dialogue mentions Teresa or Clare's past involving Teresa, including clear spelling variations.",
+        "duration": "permanent",
+        "replacements": {
+            "escalation": "- Fast escalation: Transform immediately and use transformation-dependent moves as soon as the opponent taunts about Teresa or her past. Do not delay transformation or transformation-dependent attacks. Any mention of Teresa or her past triggers immediate full transformation and transformative-form attacks, unless a mandatory defense takes priority.",
+            "delayed_escalation": "**4. Delayed escalation override:** Teresa or her past being mentioned bypasses delayed escalation. Clare must transform immediately and may use transformation-dependent moves without waiting for match progression, unless a mandatory defense takes priority.",
+        },
+    }
+}
+
+# ---------------------------------------------------------------------------
 # Folder → action type + tier mapping
 # ---------------------------------------------------------------------------
 # Keys are the exact subfolder names under the Clare clip root.
@@ -47,17 +62,7 @@ def build_clare_rules(clip_root: str | Path) -> CharacterRules:
             "Psychological responses:\n"
             "- Taunts about weakness or failure: Clare becomes more focused, not angry. "
             "She may respond with a cold observation about her opponent's own flaws.\n"
-            "DEFAULT RULE:\n"
-            "Use a slow-burn escalation: early turns should establish presence, observe the opponent, "
-            "exchange restrained Normal-tier actions, and use fitting RP or setup clips. Do not jump into "
-            "a climax, full transformation, ultimate attack, or endgame escalation on turn 2 without an "
-            "established prerequisite or an immediate survival necessity.\n\n"
-            "ESCALATION OVERRIDE (Hard Constraint - Must Be Followed):\n"
-            "- Taunts about Teresa or her past: This triggers her core trauma and completely OVERRIDES "
-            "the default slow-burn escalation rule. She becomes colder, more ruthless, and will escalate "
-            "her attacks. It will make her angry and hasten her transformation, causing her to snap and "
-            "leading her actions directly into transformations and ultimate attacks."
-                    "- Mocking her abilities: She responds by proving them wrong with precise, "
+            "- Mocking her abilities: She responds by proving them wrong with precise, "
             "efficient action rather than boasting.\n"
             "- Being called an 'ant' or insignificant: This reflects her own self-image "
             "as someone fighting monsters — she accepts the label and uses it as fuel."
@@ -168,16 +173,7 @@ def build_clare_rules(clip_root: str | Path) -> CharacterRules:
             "CRITICAL: Do NOT assume a 'Medium attack' means half-awakened. The visual appearance in the clip determines the form.",
         ],
 
-        escalation_override=(
-            "- Taunts about Teresa or her past: This triggers her core trauma. "
-            "She becomes colder, more ruthless, and will escalate her attacks, it will make her angry and hasten her transformation, it will make her snap leading her actions to transformations and ultimate attacks. "
-            "This overrides the slow-burn escalation rule - when Teresa is mentioned, Clare MUST transform immediately regardless of turn number or HP."
-        ),
-
-        delayed_escalation_override=(
-            "- Fast escalation: Transform immediately and use transformation-dependent moves as soon as the opponent taunts about Teresa or her past. Do not delay transformation or transformation-dependent attacks. The override trigger is the same as the escalation override - any mention of Teresa or her past triggers immediate full transformation and absolute-tier attacks.\n\n"
-            "4. Delayed escalation: Delay transformations and transformation-dependent moves unless necessary for survival or established by match progression."
-        ),
+        trigger_overrides=CLARE_TRIGGER_OVERRIDES,
 
         category_to_action_type=CLARE_CATEGORY_MAP,
     )

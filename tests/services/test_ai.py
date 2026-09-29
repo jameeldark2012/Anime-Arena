@@ -134,6 +134,63 @@ def test_decide_turn_replaces_duplicate_actions_with_next_available_clip(monkeyp
     assert "No opponent analysis was provided; please provide one next time" in state.turn_history_log[-1]
 
 
+def test_permanent_trigger_override_latches_and_temporary_override_does_not():
+    rules = CharacterRules(
+        name="Test",
+        series="Example",
+        clip_root=Path("E:/tmp"),
+        personality="Focused and direct.",
+        trigger_overrides={
+            "permanent_trigger": {
+                "condition": "The opponent mentions the permanent trigger.",
+                "duration": "permanent",
+                "replacements": {
+                    "escalation": "PERMANENT ESCALATION REPLACEMENT",
+                    "delayed_escalation": "PERMANENT DELAYED ESCALATION REPLACEMENT",
+                },
+            },
+            "temporary_trigger": {
+                "condition": "The opponent mentions the temporary trigger.",
+                "duration": "temporary",
+                "replacements": {"escalation": "TEMPORARY RULE REPLACEMENT"},
+            },
+        },
+    )
+    state = AIMatchState(
+        match_id=1,
+        human_player_id=2,
+        human_char_id=3,
+        ai_char_id=4,
+        character_rules=rules,
+        clip_catalog=ClipCatalog(root=Path("E:/tmp")),
+    )
+
+    state.activate_trigger_overrides({"permanent_trigger": True, "temporary_trigger": True})
+
+    prompt = build_prompt(
+        character_rules=rules,
+        opponent_profile=None,
+        my_hp=4,
+        opponent_hp=4,
+        turn_number=2,
+        opponent_attacked_last_turn=False,
+        opponent_last_attack_tier=None,
+        opponent_last_attack_descriptions=[],
+        opponent_dialogue=[],
+        established_abilities={},
+        turn_history=[],
+        available_clips=state.clip_catalog,
+        active_trigger_overrides=state.active_trigger_overrides,
+    )
+
+    assert state.active_trigger_overrides == {"permanent_trigger"}
+    assert "PERMANENT ESCALATION REPLACEMENT" in prompt
+    assert "PERMANENT DELAYED ESCALATION REPLACEMENT" in prompt
+    assert '"permanent_trigger": true or false' not in prompt
+    assert '"temporary_trigger": true or false' in prompt
+    assert "TEMPORARY RULE REPLACEMENT" in prompt
+
+
 def test_zeke_fallback_attack_excludes_catalog_used_clips(tmp_path, monkeypatch):
     catalog = ClipCatalog(root=tmp_path)
     used_path = tmp_path / "used.mp4"

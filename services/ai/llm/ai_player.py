@@ -125,6 +125,7 @@ class AITurnDecision(BaseModel):
     dialogue: str | None = None
     opponent_analysis: list[str] = Field(default_factory=list)
     intro_clip_filename: str | None = None
+    trigger_override: dict[str, bool] | None = None
 
     @field_validator("opponent_analysis", mode="before")
     @classmethod
@@ -191,6 +192,7 @@ async def decide_turn(
         available_clips=match_state.clip_catalog,
         opponent_character_name=opponent_character_name,
         previous_ai_dialogues=match_state.previous_ai_dialogues(),
+        active_trigger_overrides=match_state.active_trigger_overrides,
     )
     if opponent_media:
         prompt += _build_opponent_media_instructions(
@@ -290,6 +292,8 @@ async def decide_turn(
             turn=match_state.current_turn,
             primary_error=last_error,
         )
+
+    match_state.activate_trigger_overrides(decision.trigger_override or {})
 
     debug_event(
         "ai_response_received",
