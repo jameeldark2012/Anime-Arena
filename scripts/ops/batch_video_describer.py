@@ -1,6 +1,15 @@
+"""
+Batch Video Describer - Multi-Model Concurrent Transcription
+
+Processes multiple videos simultaneously across Gemini 3.5, 3.1 (5 RPM each),
+and unlimited Qwen. Each video is locked to one worker — no duplication.
+Models race when assigned a video; winner takes the result.
+"""
+
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 import sys
@@ -8,17 +17,15 @@ import time
 from pathlib import Path
 from typing import Any
 
-# Allow running as a script from the project root
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from core.config import settings
-from services.ai import GeminiClient, MediaFile, Message, RateLimiter, normalize_model_name
-from services.ai.llm.gemini import DEFAULT_MODEL
-from services.ai.llm.rate_limiter import DEFAULT_RPM_LIMIT
+from services.ai.llm.factory import get_client
+from services.ai.llm.base import MediaFile, Message
 from services.media.media_service import (
     collect_videos,
-    estimate_video_tokens,
     probe_video_duration,
+    sample_video_frames,
 )
 
 DEFAULT_MANIFEST_NAME = ".video_analysis_manifest.json"
@@ -52,7 +59,7 @@ After covering those, her expression or demeanor. Scenery is last priority and o
 Return plain text only — no JSON, no bullet points, no formatting."""
 
 
-def _api_key() -> str:
+def _gemini_api_key() -> str:
     key = settings.GOOGLE_API_KEY or os.getenv("GOOGLE_API_KEY", "").strip()
     if not key:
         raise SystemExit(
@@ -73,39 +80,207 @@ def load_manifest(manifest_path: str | Path) -> dict[str, Any]:
         return {}
 
 
-def _analysis_path_for(video_path: Path) -> Path:
-    return video_path.with_name(f"{video_path.stem}.analysis.json")
+class AsyncRateLimiter:
+    """Per-model RPM limiter using sliding 60-second window."""
+    
+    def __init__(self, rpm_limit: int = 5):
+        self.rpm_limit = max(1, int(rpm_limit))
+        self._request_times: list[float] = []
+        self._lock = asyncio.Lock()
+    
+    async def acquire(self) -> None:
+        """Wait until RPM budget allows the next request."""
+        async with self._lock:
+            while True:
+                now = time.monotonic()
+                
+                # Remove requests older than 60 seconds (sliding window)
+                self._request_times = [t for t in self._request_times if now - t < 60.0]
+                
+                if len(self._request_times) < self.rpm_limit:
+                    # Budget available - claim slot immediately
+                    self._request_times.append(now)
+                    return
+                
+                # Need to wait until oldest request exits the 60s window
+                oldest = self._request_times[0]
+                wait_time = 60.0 - (now - oldest) + 0.1
+                
+                # Release lock, sleep, then retry
+                self._lock.release()
+                await asyncio.sleep(wait_time)
+                await self._lock.acquire()
 
 
-def estimate_processing_schedule(
-    videos: list[Path], *, tpm_limit: int, safety_margin: float
-) -> dict[str, float | int]:
-    if not videos:
-        return {
-            "average_duration_seconds": 0.0,
-            "estimated_tokens_per_video": 0,
-            "effective_tpm_budget": 0,
-            "target_interval_seconds": 0.0,
-        }
-    durations = [d for v in videos if (d := probe_video_duration(v)) > 0]
-    average_duration = sum(durations) / len(durations) if durations else 0.0
-    tokens_per_video = estimate_video_tokens(average_duration)
-    effective_budget = max(1, int(tpm_limit * safety_margin))
-    target_interval = (
-        60.0 / max(1, effective_budget // max(1, tokens_per_video))
-        if tokens_per_video else 0.0
-    )
-    return {
-        "average_duration_seconds": average_duration,
-        "estimated_tokens_per_video": tokens_per_video,
-        "effective_tpm_budget": effective_budget,
-        "target_interval_seconds": target_interval,
-    }
+class ModelClient:
+    """Wrapper for a single LLM client with metadata."""
+    
+    def __init__(self, name: str, client: Any, rate_limiter: AsyncRateLimiter | None = None, is_qwen: bool = False):
+        self.name = name
+        self.client = client
+        self.rate_limiter = rate_limiter
+        self.is_qwen = is_qwen
+    
+    async def generate(self, message: Message) -> str | None:
+        """Generate response with optional rate limiting."""
+        try:
+            if self.rate_limiter:
+                # Log BEFORE acquiring to show we're waiting
+                async with self.rate_limiter._lock:
+                    active = len([t for t in self.rate_limiter._request_times if time.monotonic() - t < 60.0])
+                    if active >= self.rate_limiter.rpm_limit:
+                        print(f"[{self.name}] Waiting for slot ({active}/{self.rate_limiter.rpm_limit} active)...", file=sys.stderr, flush=True)
+                
+                await self.rate_limiter.acquire()
+            
+            # For Qwen, preprocess video into frames (non-blocking)
+            if self.is_qwen and message.media:
+                try:
+                    video_path = message.media[0].path
+                    
+                    # Run frame extraction in thread pool to avoid blocking event loop
+                    loop = asyncio.get_event_loop()
+                    frames = await loop.run_in_executor(
+                        None,
+                        self._sample_frames_for_qwen,
+                        video_path
+                    )
+                    
+                    if not frames:
+                        print(f"[{self.name}] Frame extraction returned empty", file=sys.stderr, flush=True)
+                        return None
+                    
+                    frame_media = [MediaFile(path=frame) for frame in frames]
+                    qwen_msg = Message(text=message.text, media=frame_media)
+                    
+                    # Run model inference in thread pool too
+                    response = await loop.run_in_executor(None, self.client.generate, qwen_msg)
+                    
+                    # Cleanup frames
+                    for frame in frames:
+                        try:
+                            frame.unlink()
+                        except:
+                            pass
+                    try:
+                        frames[0].parent.rmdir()
+                    except:
+                        pass
+                    
+                    return response.text.strip() if response else None
+                except Exception as e:
+                    print(f"[{self.name}] Frame processing error: {e}", file=sys.stderr, flush=True)
+                    return None
+            
+            response = self.client.generate(message)
+            return response.text.strip() if response else None
+        except Exception as e:
+            print(f"[{self.name}] Generation error: {e}", file=sys.stderr, flush=True)
+            return None
+    
+    def _sample_frames_for_qwen(self, video_path: Path) -> list[Path]:
+        """Sample frames distributed across entire video (max 60 frames, 5 fps)."""
+        duration = probe_video_duration(video_path)
+        if duration <= 0:
+            return []
+        
+        # Calculate how many frames at 5 fps
+        total_frames_at_5fps = int(duration * 5.0)
+        
+        if total_frames_at_5fps <= 60:
+            # Video is short enough; sample at 5 fps
+            return sample_video_frames(
+                video_path,
+                min_frames=1,
+                max_frames=60,
+                fps=5.0,
+                max_dimension=512
+            )
+        else:
+            # Video is longer; distribute 60 frames evenly across entire duration
+            effective_fps = 60.0 / duration
+            return sample_video_frames(
+                video_path,
+                min_frames=1,
+                max_frames=60,
+                fps=effective_fps,
+                max_dimension=512
+            )
 
 
-class BatchAnalyzer:
-    MIN_DURATION_SECONDS = 1.0
+class MultiModelTranscriber:
+    """Manages multiple models. Each model works on separate videos (no racing)."""
+    
+    def __init__(self, gemini_api_key: str, rpm_limit: int = 5):
+        self.gemini_api_key = gemini_api_key
+        self.rpm_limit = rpm_limit
+        self.models: list[ModelClient] = []
+        self._init_models()
+    
+    def _init_models(self) -> None:
+        """Initialize all available models."""
+        # Gemini 3.5 Flash Lite with rate limiting
+        try:
+            client_3_5 = get_client(
+                "gemini",
+                api_key=self.gemini_api_key,
+                model="gemini-3.5-flash-lite",
+                temperature=0.1,
+                max_output_tokens=2048
+            )
+            limiter_3_5 = AsyncRateLimiter(rpm_limit=self.rpm_limit)
+            self.models.append(ModelClient("GEMINI-3.5", client_3_5, limiter_3_5))
+            print(f"[INFO] Initialized Gemini 3.5 Flash Lite ({self.rpm_limit} RPM limit)", file=sys.stderr)
+        except Exception as e:
+            print(f"[WARN] Gemini 3.5 init failed: {e}", file=sys.stderr)
+        
+        # Gemini 3.1 Flash Lite with rate limiting
+        try:
+            client_3_1 = get_client(
+                "gemini",
+                api_key=self.gemini_api_key,
+                model="gemini-3.1-flash-lite",
+                temperature=0.1,
+                max_output_tokens=2048
+            )
+            limiter_3_1 = AsyncRateLimiter(rpm_limit=self.rpm_limit)
+            self.models.append(ModelClient("GEMINI-3.1", client_3_1, limiter_3_1))
+            print(f"[INFO] Initialized Gemini 3.1 Flash Lite ({self.rpm_limit} RPM limit)", file=sys.stderr)
+        except Exception as e:
+            print(f"[WARN] Gemini 3.1 init failed: {e}", file=sys.stderr)
+        
+        # Qwen (no rate limit)
+        try:
+            qwen_model = os.environ.get("OLLAMA_FALLBACK_MODEL", "fredrezones55/Qwen3.5-APEX:latest")
+            client_qwen = get_client("ollama", model=qwen_model)
+            self.models.append(ModelClient("QWEN", client_qwen, rate_limiter=None, is_qwen=True))
+            print("[INFO] Initialized Qwen (no rate limit, frame preprocessing)", file=sys.stderr)
+        except Exception as e:
+            print(f"[WARN] Qwen init failed: {e}", file=sys.stderr)
+        
+        if not self.models:
+            raise RuntimeError("No models initialized successfully")
+    
+    async def transcribe(self, message: Message, model: ModelClient) -> tuple[str, str]:
+        """Transcribe a single video with the assigned model."""
+        result = await model.generate(message)
+        if not result:
+            raise RuntimeError(f"{model.name} failed to transcribe")
+        return result, model.name
 
+
+class BatchTranscriber:
+    """
+    Batch video transcriber with round-robin model assignment.
+    
+    Workflow:
+    1. Get list of pending videos
+    2. Each model is assigned videos in round-robin fashion
+    3. Models work concurrently (Gemini models respect RPM limits, Qwen has none)
+    4. No duplicate work: each video processed by exactly one model
+    5. Results persisted to manifest after each successful transcription
+    """
+    
     def __init__(
         self,
         root: str | Path,
@@ -113,235 +288,204 @@ class BatchAnalyzer:
         output_dir: str | Path | None = None,
         manifest_path: str | Path | None = None,
         api_key: str | None = None,
-        model: str | None = None,
         prompt: str | None = None,
-        max_retries: int = 4,
-        rate_limiter: RateLimiter | None = None,
+        gemini_rpm_limit: int = 5,
     ):
         self.root = Path(root).expanduser().resolve()
         self.output_dir = Path(output_dir).expanduser().resolve() if output_dir else self.root
-        resolved_manifest = (
-            Path(manifest_path).expanduser().resolve()
-            if manifest_path
-            else self.root / DEFAULT_MANIFEST_NAME
+        self.manifest_path = (
+            Path(manifest_path).expanduser().resolve() if manifest_path else self.root / DEFAULT_MANIFEST_NAME
         )
-        if resolved_manifest.is_dir():
-            resolved_manifest = resolved_manifest / DEFAULT_MANIFEST_NAME
-        self.manifest_path = resolved_manifest
         self.prompt = (prompt or DEFAULT_PROMPT).strip()
-        self.max_retries = max(0, int(max_retries))
-        self.rate_limiter = rate_limiter or RateLimiter(
-            tpm_limit=65000, rpm_limit=DEFAULT_RPM_LIMIT, safety_margin=0.8
-        )
         self.manifest = load_manifest(self.manifest_path)
-
-        resolved_key = api_key or _api_key()
-        resolved_model = normalize_model_name(model or settings.GOOGLE_MODEL or os.getenv("GOOGLE_MODEL", DEFAULT_MODEL))
-        self.client = GeminiClient(api_key=resolved_key, model=resolved_model)
-
-    # ------------------------------------------------------------------
-    # Manifest / path helpers
-    # ------------------------------------------------------------------
-
+        
+        self.transcriber = MultiModelTranscriber(
+            api_key or _gemini_api_key(),
+            rpm_limit=gemini_rpm_limit
+        )
+        
+        self._manifest_lock = asyncio.Lock()
+    
     def _relative_path(self, video_path: Path) -> str:
+        """Get relative path key for manifest storage."""
         return video_path.relative_to(self.root).as_posix()
-
-    def is_processed(self, video_path: Path) -> bool:
-        if not video_path.is_file():
-            return False
+    
+    def _is_processed(self, video_path: Path) -> bool:
+        """Check if video already has successful result."""
         relative_key = self._relative_path(video_path)
-        if self.manifest.get(relative_key, {}).get("status") == "done":
-            return True
-        if self.output_dir == self.root:
-            return _analysis_path_for(video_path).exists()
-        rel = self._relative_path(video_path)
-        base = self.output_dir / rel
-        stem = Path(rel).stem
-        return any(
-            (self.output_dir / Path(rel).parent / f"{stem}{ext}").exists()
-            for ext in (".analysis.json", ".json", ".txt")
-        )
-
-    def get_pending_files(self) -> list[Path]:
-        return [v for v in collect_videos(self.root) if not self.is_processed(v)]
-
-    def _result_path_for(self, video_path: Path) -> Path:
-        if self.output_dir == self.root:
-            return _analysis_path_for(video_path)
-        rel = self._relative_path(video_path)
-        return self.output_dir / Path(rel).parent / f"{video_path.stem}.analysis.json"
-
-    def _save_manifest(self) -> None:
-        self.manifest_path.parent.mkdir(parents=True, exist_ok=True)
-        self.manifest_path.write_text(
-            json.dumps(self.manifest, indent=2, ensure_ascii=False), encoding="utf-8"
-        )
-
-    def _record_success(self, video_path: Path, result: dict[str, Any], output_path: Path) -> None:
+        return self.manifest.get(relative_key, {}).get("status") == "done"
+    
+    def _get_pending_videos(self) -> list[Path]:
+        """Collect all unprocessed videos (dynamic check)."""
+        all_videos = collect_videos(self.root)
+        return [v for v in all_videos if not self._is_processed(v)]
+    
+    async def _save_result(self, video_path: Path, description: str, model_name: str) -> None:
+        """Persist transcription result and update manifest."""
         relative_key = self._relative_path(video_path)
+        output_path = self.output_dir / Path(relative_key).parent / f"{video_path.stem}.analysis.json"
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
-        self.manifest[relative_key] = {
-            "status": "done",
-            "video_path": str(video_path),
-            "relative_path": relative_key,
-            "output_path": str(output_path),
-            "processed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        }
-        self._save_manifest()
-
-    def _record_failure(self, video_path: Path, error: Exception | str) -> None:
-        relative_key = self._relative_path(video_path)
-        self.manifest[relative_key] = {
-            "status": "failed",
-            "video_path": str(video_path),
-            "relative_path": relative_key,
-            "error": str(error),
-            "processed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        }
-        self._save_manifest()
-
-    # ------------------------------------------------------------------
-    # Processing
-    # ------------------------------------------------------------------
-
-    def _process_single_video(self, video_path: Path) -> dict[str, Any]:
-        duration = probe_video_duration(video_path)
-        if 0 < duration < self.MIN_DURATION_SECONDS:
-            result = {
-                "video_name": video_path.name,
-                "video_path": str(video_path),
-                "description": video_path.stem,
-            }
-            self._record_success(video_path, result, self._result_path_for(video_path))
-            print(
-                f"[SKIP] {video_path.name} — too short ({duration:.2f}s), description set to filename.",
-                file=sys.stderr,
-            )
-            return result
-
-        # Build the prompt with the filename injected at the end as the strongest signal
-        full_prompt = (
-            f'{self.prompt}\n\n'
-            f'Filename: "{video_path.name}" — numbers in the filename are sequence IDs only, not part of the action. Ignore them.'
-        )
-
-        message = Message(
-            text=full_prompt,
-            media=[MediaFile(path=video_path)],
-        )
-        response = self.client.generate(message)
-
-        return {
+        
+        result = {
             "video_name": video_path.name,
             "video_path": str(video_path),
-            "description": response.text,
+            "description": description,
+            "model": model_name,
         }
-
-    def process_file(self, video_path: Path) -> dict[str, Any]:
-        attempts = 0
-        while attempts <= self.max_retries:
-            try:
-                result = self._process_single_video(video_path)
-                self._record_success(video_path, result, self._result_path_for(video_path))
-                return result
-            except ValueError as exc:
-                # Non-retriable (e.g. file too short)
-                self._record_failure(video_path, exc)
-                raise
-            except Exception as exc:
-                attempts += 1
-                if attempts > self.max_retries:
-                    self._record_failure(video_path, exc)
-                    raise
-                delay = min(60, 5 * (2 ** (attempts - 1)))
-                print(
-                    f"[RETRY] {video_path.name} failed ({exc}). Sleeping {delay}s before retry {attempts}/{self.max_retries}",
-                    file=sys.stderr,
-                )
-                time.sleep(delay)
-        raise RuntimeError(f"Processing failed for {video_path}")
-
-    def run(self, *, quiet: bool = False) -> list[dict[str, Any]]:
-        pending = self.get_pending_files()
+        output_path.write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
+        
+        async with self._manifest_lock:
+            self.manifest[relative_key] = {
+                "status": "done",
+                "video_path": str(video_path),
+                "output_path": str(output_path),
+                "model": model_name,
+                "processed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            }
+            self.manifest_path.parent.mkdir(parents=True, exist_ok=True)
+            self.manifest_path.write_text(json.dumps(self.manifest, indent=2, ensure_ascii=False), encoding="utf-8")
+    
+    async def _save_failure(self, video_path: Path, error: str) -> None:
+        """Persist failure and update manifest."""
+        relative_key = self._relative_path(video_path)
+        async with self._manifest_lock:
+            self.manifest[relative_key] = {
+                "status": "failed",
+                "error": error,
+                "processed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            }
+            self.manifest_path.parent.mkdir(parents=True, exist_ok=True)
+            self.manifest_path.write_text(json.dumps(self.manifest, indent=2, ensure_ascii=False), encoding="utf-8")
+    
+    async def _process_video(self, video_path: Path, model: ModelClient, progress_counter: dict) -> None:
+        """Process a single video using assigned model."""
+        video_name = video_path.name
+        
+        try:
+            # Check duration
+            duration = probe_video_duration(video_path)
+            if 0 < duration < 1.0:
+                await self._save_result(video_path, video_path.stem, "skipped")
+                async with self._manifest_lock:
+                    progress_counter['completed'] += 1
+                    print(f"[{progress_counter['completed']}/{progress_counter['total']}] [{model.name}] SKIP {video_name} (too short)", file=sys.stderr, flush=True)
+                return
+            
+            # Build message
+            full_prompt = f'{self.prompt}\n\nFilename: "{video_path.name}"'
+            message = Message(text=full_prompt, media=[MediaFile(path=video_path)])
+            
+            # Transcribe with assigned model
+            description, model_name = await self.transcriber.transcribe(message, model)
+            
+            await self._save_result(video_path, description, model_name)
+            async with self._manifest_lock:
+                progress_counter['completed'] += 1
+                print(f"[{progress_counter['completed']}/{progress_counter['total']}] [{model.name}] ✓ {video_name}", file=sys.stderr, flush=True)
+            
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            error_msg = f"{type(e).__name__}: {e}"
+            await self._save_failure(video_path, error_msg)
+            async with self._manifest_lock:
+                progress_counter['completed'] += 1
+                print(f"[{progress_counter['completed']}/{progress_counter['total']}] [{model.name}] ✗ {video_name}: {error_msg}", file=sys.stderr, flush=True)
+    
+    async def run(self) -> None:
+        """
+        Run the batch transcriber with round-robin model assignment.
+        
+        Each model is assigned videos in sequence. All models work concurrently.
+        """
+        pending = self._get_pending_videos()
         if not pending:
-            print("[OK] Nothing pending. Already processed all supported videos.")
-            return []
-
-        schedule = estimate_processing_schedule(
-            pending,
-            tpm_limit=self.rate_limiter.tpm_limit,
-            safety_margin=self.rate_limiter.safety_margin,
-        )
-        print(f"[INFO] Found {len(pending)} videos to analyze.")
-        print(
-            f"[INFO] Avg duration: {schedule['average_duration_seconds']:.1f}s | "
-            f"estimated tokens/video: {schedule['estimated_tokens_per_video']} | "
-            f"effective TPM budget: {schedule['effective_tpm_budget']}"
-        )
-        if schedule["target_interval_seconds"]:
-            print(f"[INFO] Recommended pacing: ~{schedule['target_interval_seconds']:.1f}s between model calls.")
-
-        results: list[dict[str, Any]] = []
-        failed: list[Path] = []
-
-        for index, video_path in enumerate(pending, start=1):
-            start_time = time.monotonic()
-            if not quiet:
-                print(f"[RUN] ({index}/{len(pending)}) {video_path}")
-            self.rate_limiter.wait(estimate_video_tokens(probe_video_duration(video_path)))
-            try:
-                result = self.process_file(video_path)
-            except Exception as exc:
-                print(
-                    f"[SKIP] ({index}/{len(pending)}) {video_path.name} — permanently failed: {exc}",
-                    file=sys.stderr,
-                )
-                failed.append(video_path)
-                continue
-            results.append(result)
-            if not quiet:
-                print(f"[DONE] ({index}/{len(pending)}) {video_path.name} in {time.monotonic() - start_time:.1f}s")
-
-        if failed:
-            print(f"\n[WARN] {len(failed)} file(s) permanently failed and were skipped:", file=sys.stderr)
-            for f in failed:
-                print(f"  - {f}", file=sys.stderr)
-
-        return results
+            print("[OK] All videos already processed", file=sys.stderr)
+            return
+        
+        models = self.transcriber.models
+        if not models:
+            print("[ERROR] No models available", file=sys.stderr)
+            return
+        
+        print(f"[INFO] Found {len(pending)} videos to transcribe", file=sys.stderr)
+        print(f"[INFO] {len(models)} model(s) available:", file=sys.stderr)
+        for model in models:
+            limit_str = f"{model.rate_limiter.rpm_limit} RPM" if model.rate_limiter else "unlimited"
+            print(f"  - {model.name}: {limit_str}", file=sys.stderr)
+        print(f"[START] Processing {len(pending)} videos...\n", file=sys.stderr)
+        
+        # Progress counter shared across tasks
+        progress_counter = {'completed': 0, 'total': len(pending)}
+        
+        # Assign videos to models in round-robin
+        tasks = []
+        for idx, video_path in enumerate(pending):
+            assigned_model = models[idx % len(models)]
+            tasks.append(self._process_video(video_path, assigned_model, progress_counter))
+        
+        # Run all tasks concurrently
+        await asyncio.gather(*tasks, return_exceptions=True)
+        
+        print(f"\n[DONE] Completed {progress_counter['completed']}/{progress_counter['total']} videos", file=sys.stderr)
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Recursively analyze all videos under a folder with a Gemini model and save structured descriptions."
+        description="Batch multi-model video transcriber with round-robin assignment"
     )
     parser.add_argument(
         "--root",
         type=str,
         default=str(Path(__file__).resolve().parents[2] / "assets" / "boss_clips"),
-        help="Folder to scan recursively for videos.",
+        help="Root folder to scan for videos"
     )
-    parser.add_argument("--output-dir", type=str, default=None)
-    parser.add_argument("--manifest-path", type=str, default=None)
-    parser.add_argument("--model", type=str, default=os.getenv("GOOGLE_MODEL", DEFAULT_MODEL))
-    parser.add_argument("--prompt", type=str, default=DEFAULT_PROMPT)
-    parser.add_argument("--prompt-file", type=str, default=None)
-    parser.add_argument("--tpm-limit", type=int, default=65000)
-    parser.add_argument("--rpm-limit", type=int, default=DEFAULT_RPM_LIMIT)
-    parser.add_argument("--safety-margin", type=float, default=0.8)
-    parser.add_argument("--max-retries", type=int, default=4)
-    parser.add_argument("--reset", action="store_true", help="Discard manifest and reprocess every file.")
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=None,
+        help="Output directory for .analysis.json files (default: same as root)"
+    )
+    parser.add_argument(
+        "--manifest-path",
+        type=str,
+        default=None,
+        help="Path to manifest file (default: .video_analysis_manifest.json in root)"
+    )
+    parser.add_argument(
+        "--prompt",
+        type=str,
+        default=DEFAULT_PROMPT,
+        help="Custom prompt (inline)"
+    )
+    parser.add_argument(
+        "--prompt-file",
+        type=str,
+        default=None,
+        help="Load prompt from file"
+    )
+    parser.add_argument(
+        "--gemini-rpm-limit",
+        type=int,
+        default=5,
+        help="Requests-per-minute limit for Gemini models (default: 5)"
+    )
+    parser.add_argument(
+        "--reset",
+        action="store_true",
+        help="Clear manifest and restart from scratch"
+    )
     return parser.parse_args()
 
 
-def main() -> int:
+async def main() -> int:
     args = parse_args()
-
+    
     root = Path(args.root).expanduser().resolve()
     if not root.exists():
         print(f"[ERROR] Root folder does not exist: {root}", file=sys.stderr)
         return 1
-
+    
     prompt = args.prompt
     if args.prompt_file:
         prompt_file = Path(args.prompt_file).expanduser().resolve()
@@ -349,7 +493,7 @@ def main() -> int:
             print(f"[ERROR] Prompt file not found: {prompt_file}", file=sys.stderr)
             return 1
         prompt = prompt_file.read_text(encoding="utf-8")
-
+    
     manifest_path = (
         Path(args.manifest_path).expanduser().resolve()
         if args.manifest_path
@@ -357,29 +501,26 @@ def main() -> int:
     )
     if args.reset and manifest_path.exists():
         manifest_path.unlink()
-        print(f"[INFO] Manifest reset: {manifest_path}")
-
-    rate_limiter = RateLimiter(
-        tpm_limit=args.tpm_limit, rpm_limit=args.rpm_limit, safety_margin=args.safety_margin
-    )
-    analyzer = BatchAnalyzer(
+        print(f"[INFO] Manifest reset", file=sys.stderr)
+    
+    transcriber = BatchTranscriber(
         root,
         output_dir=args.output_dir,
         manifest_path=manifest_path,
-        api_key=_api_key(),
-        model=args.model,
+        api_key=_gemini_api_key(),
         prompt=prompt,
-        max_retries=args.max_retries,
-        rate_limiter=rate_limiter,
+        gemini_rpm_limit=args.gemini_rpm_limit,
     )
-
+    
     try:
-        analyzer.run()
+        await transcriber.run()
         return 0
-    except Exception as exc:  # pragma: no cover
-        print(f"[ERROR] {exc}", file=sys.stderr)
+    except Exception as e:
+        print(f"[ERROR] {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc(file=sys.stderr)
         return 1
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(asyncio.run(main()))
