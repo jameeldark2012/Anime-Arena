@@ -343,6 +343,22 @@ def build_prompt(
             hist_lines.append(f"- {entry}")
         sections.append("\n".join(hist_lines))
 
+    # 10.5 Active Triggers - HIGH PRIORITY INSTRUCTIONS
+    if active_trigger_overrides:
+        trigger_lines = ["## 🔥 ACTIVE TRIGGERS - READ BEFORE SELECTING CLIPS 🔥"]
+        trigger_lines.append("**The following special conditions are currently active and override normal behavior:**\n")
+        for trigger_name in active_trigger_overrides:
+            override = (character_rules.trigger_overrides or {}).get(trigger_name)
+            if override:
+                trigger_lines.append(f"### Trigger: {trigger_name.replace('_', ' ').title()}")
+                trigger_lines.append(f"**Condition:** {override.get('condition', 'N/A')}")
+                trigger_lines.append(f"**Duration:** {override.get('duration', 'permanent')}\n")
+                trigger_lines.append("**MANDATORY INSTRUCTIONS:**")
+                for target, replacement in override["replacements"].items():
+                    trigger_lines.append(f"- {replacement}")
+                trigger_lines.append("")
+        sections.append("\n".join(trigger_lines))
+
     # 11. Available clips
     sections.append(_build_available_clips_section(available_clips, character_rules, established_abilities))
 
