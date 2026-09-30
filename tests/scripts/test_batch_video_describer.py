@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import json
-from pathlib import Path
 
+import scripts.ops.batch_video_describer as describer_module
 from scripts.ops.batch_video_describer import (
-    BatchAnalyzer, 
-    collect_videos, 
+    BatchTranscriber,
+    MultiModelTranscriber,
+    DEFAULT_PROMPT,
+    collect_videos,
     load_manifest,
-    MultiModelAnalyzer,
-    DEFAULT_PROMPT
 )
 
 
@@ -31,7 +31,7 @@ def test_collect_videos_recurses_and_filters(tmp_path):
     assert {str(p.relative_to(root)).replace("\\", "/") for p in found} == {"clip_a.mp4", "nested/deep/clip_b.mkv"}
 
 
-def test_batch_analyzer_skips_completed_items(tmp_path):
+def test_batch_transcriber_skips_completed_items(tmp_path, monkeypatch):
     root = tmp_path / "videos"
     root.mkdir()
     file_path = root / "done.mp4"
@@ -39,116 +39,101 @@ def test_batch_analyzer_skips_completed_items(tmp_path):
 
     output_dir = tmp_path / "out"
     output_dir.mkdir()
-    output_file = output_dir / "done.analysis.json"
-    output_file.write_text(json.dumps({
-        "video_name": "done.mp4",
-        "video_path": str(file_path),
-        "description": "already analyzed"
-    }, indent=2))
+    manifest_path = output_dir / ".video_analysis_manifest.json"
+    manifest_path.write_text(json.dumps({"done.mp4": {"status": "done"}}))
 
-    analyzer = BatchAnalyzer(
-        root, 
-        output_dir=output_dir, 
-        manifest_path=output_dir / ".video_analysis_manifest.json",
+    monkeypatch.setattr(
+        describer_module.MultiModelTranscriber,
+        "_init_models",
+        lambda self: setattr(self, "models", [describer_module.ModelClient("FAKE", object())]),
+    )
+
+    analyzer = BatchTranscriber(
+        root,
+        output_dir=output_dir,
+        manifest_path=manifest_path,
         api_key="test-key",
-        use_local_fallback=False
     )
 
-    assert analyzer.is_processed(file_path) is True
-    assert analyzer.get_pending_files() == []
+    assert analyzer._is_processed(file_path) is True
+    assert analyzer._get_pending_videos() == []
 
 
-def test_multi_model_analyzer_initialization():
-    """Test that MultiModelAnalyzer initializes without errors."""
-    analyzer = MultiModelAnalyzer(
-        gemini_api_key="test-key",
-        gemini_3_1_model="gemini-3.1-pro",
-        gemini_3_5_model="gemini-3.5-flash-lite",
-        qwen_model="test-qwen",
-        gemini_rpm_limit=12,
-        use_local_fallback=False
-    )
-    
-    # Should have None clients when API key is fake
+def test_multi_model_transcriber_initialization(monkeypatch):
+    """Test that MultiModelTranscriber initializes without errors."""
+    monkeypatch.setattr(describer_module, "get_client", lambda *args, **kwargs: object())
+
+    analyzer = MultiModelTranscriber(gemini_api_key="test-key", rpm_limit=12)
+
     assert analyzer.gemini_api_key == "test-key"
-    assert analyzer.gemini_3_1_model == "gemini-3.1-pro"
-    assert analyzer.gemini_3_5_model == "gemini-3.5-flash-lite"
-    assert analyzer.qwen_model == "test-qwen"
-    assert analyzer.gemini_3_1_limiter is not None
-    assert analyzer.gemini_3_5_limiter is not None
-    assert analyzer.use_local_fallback == False
+    assert analyzer.rpm_limit == 12
+    assert len(analyzer.models) == 3
+    assert all(isinstance(model, describer_module.ModelClient) for model in analyzer.models)
 
 
-def test_batch_analyzer_manifest_handling(tmp_path):
+def test_batch_transcriber_manifest_handling(tmp_path, monkeypatch):
     """Test manifest creation and loading."""
     root = tmp_path / "videos"
     root.mkdir()
-    
+
     manifest_path = root / ".video_analysis_manifest.json"
-    
-    # Create analyzer
-    analyzer = BatchAnalyzer(
-        root,
-        manifest_path=manifest_path,
-        api_key="test-key",
-        use_local_fallback=False
+
+    monkeypatch.setattr(
+        describer_module.MultiModelTranscriber,
+        "_init_models",
+        lambda self: setattr(self, "models", [describer_module.ModelClient("FAKE", object())]),
     )
-    
-    # Manifest should be empty initially
+
+    analyzer = BatchTranscriber(root, manifest_path=manifest_path, api_key="test-key")
+
     assert analyzer.manifest == {}
-    
-    # Save some data
+
     test_video = root / "test.mp4"
     test_video.write_bytes(b"test")
     output_path = root / "test.analysis.json"
-    
+
     result = {
         "video_name": "test.mp4",
         "video_path": str(test_video),
-        "description": "Test description"
+        "description": "Test description",
     }
-    
-    analyzer._record_success(test_video, result, output_path)
-    
-    # Manifest should now have the entry
+
+    asyncio.run(analyzer._save_result(test_video, result["description"], "FAKE"))
+
     assert "test.mp4" in analyzer.manifest
     assert analyzer.manifest["test.mp4"]["status"] == "done"
-    
-    # Load manifest should work
+
     loaded = load_manifest(manifest_path)
     assert loaded["test.mp4"]["status"] == "done"
 
 
-async def test_short_video_skip(tmp_path):
-    """Test that very short videos are skipped with filename as description."""
+def test_short_video_skip(tmp_path, monkeypatch):
+    """Test that very short videos are skipped and recorded without crashing."""
     root = tmp_path / "videos"
     root.mkdir()
-    
-    # Create a test video (just metadata, not real video)
+
     test_video = root / "short_test.mp4"
     test_video.write_bytes(b"fake video data")
-    
-    analyzer = BatchAnalyzer(
-        root,
-        api_key="test-key",
-        use_local_fallback=False
+
+    monkeypatch.setattr(
+        describer_module.MultiModelTranscriber,
+        "_init_models",
+        lambda self: setattr(self, "models", [describer_module.ModelClient("FAKE", object())]),
     )
-    
-    # Mock the video duration to be very short
-    import scripts.ops.batch_video_describer as module
-    original_probe = module.probe_video_duration
-    
-    def mock_probe_video_duration(path):
-        return 0.5  # Less than MIN_DURATION_SECONDS
-    
-    module.probe_video_duration = mock_probe_video_duration
-    
-    try:
-        result = await analyzer._process_single_video(test_video)
-        
-        # Should skip and use filename as description
-        assert result["video_name"] == "short_test.mp4"
-        assert result["description"] == "short_test"
-    finally:
-        module.probe_video_duration = original_probe
+
+    analyzer = BatchTranscriber(root, api_key="test-key")
+    monkeypatch.setattr(describer_module, "probe_video_duration", lambda path: 0.5)
+
+    progress_counter = {"completed": 0, "total": 1}
+    asyncio.run(analyzer._process_video(test_video, analyzer.transcriber.models[0], progress_counter))
+
+    assert progress_counter["completed"] == 1
+    assert analyzer.manifest["short_test.mp4"]["status"] == "done"
+    assert analyzer.manifest["short_test.mp4"]["video_path"] == str(test_video)
+
+    output_file = root / "short_test.analysis.json"
+    assert output_file.exists()
+    payload = json.loads(output_file.read_text(encoding="utf-8"))
+    assert payload["description"] == "short_test"
+    assert payload["video_name"] == "short_test.mp4"
 

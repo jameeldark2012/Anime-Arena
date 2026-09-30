@@ -33,7 +33,6 @@ def test_boss_battle_cog_has_talk_commands():
     from app.cogs.boss_battle import BossBattleCog
 
     assert hasattr(BossBattleCog, "submit_talk")
-    assert hasattr(BossBattleCog, "boss_talk")
 
 
 def test_post_turn_result_exists():

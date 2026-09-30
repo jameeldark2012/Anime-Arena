@@ -109,10 +109,6 @@ class BossBattleCog(commands.Cog):
             f"You go first — good luck against **{boss_state.boss_config.display_name}**!",
         )
 
-
-    async def boss_attack(self, interaction: discord.Interaction) -> None:
-        await self.submit_attack(interaction)
-
     async def submit_attack(self, interaction: discord.Interaction) -> None:
         boss_state, err = self._validate(interaction)
         if err:
@@ -140,9 +136,6 @@ class BossBattleCog(commands.Cog):
             "Select your **attack** tier:", view=view, ephemeral=True
         )
 
-    async def boss_defend(self, interaction: discord.Interaction) -> None:
-        await self.submit_defense(interaction)
-
     async def submit_defense(self, interaction: discord.Interaction) -> None:
         boss_state, err = self._validate(interaction)
         if err:
@@ -163,9 +156,6 @@ class BossBattleCog(commands.Cog):
         await interaction.response.send_message(
             "Select your **defense** tier:", view=view, ephemeral=True
         )
-
-    async def boss_custom(self, interaction: discord.Interaction) -> None:
-        await self.submit_custom(interaction)
 
     async def submit_custom(self, interaction: discord.Interaction) -> None:
         boss_state, err = self._validate(interaction)
@@ -226,9 +216,6 @@ class BossBattleCog(commands.Cog):
                 )
             )
 
-    async def boss_talk(self, interaction: discord.Interaction) -> None:
-        await self.submit_talk(interaction)
-
     async def submit_talk(self, interaction: discord.Interaction) -> None:
         """Handle /talk command in boss battles."""
         boss_state, err = self._validate(interaction)
@@ -269,9 +256,6 @@ class BossBattleCog(commands.Cog):
 
         await interaction.response.send_modal(TalkModal())
 
-    async def boss_end_turn(self, interaction: discord.Interaction) -> None:
-        await self.finish_player_turn(interaction)
-
     async def finish_player_turn(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(thinking=True, ephemeral=False)
 
@@ -307,9 +291,6 @@ class BossBattleCog(commands.Cog):
         # ── Boss takes its turn automatically ─────────────────────────────────
         await interaction.channel.send("⚙️ **The boss is responding…**")
         await self._run_boss_turn_and_post(boss_state, interaction.channel)
-
-    async def boss_surrender(self, interaction: discord.Interaction) -> None:
-        await self.forfeit(interaction)
 
     async def forfeit(self, interaction: discord.Interaction) -> None:
         boss_state, err = self._validate(interaction)
