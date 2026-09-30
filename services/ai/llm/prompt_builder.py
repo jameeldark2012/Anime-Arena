@@ -392,21 +392,8 @@ def _build_available_clips_section(catalog: ClipCatalog, rules: CharacterRules, 
             lines.append("*(No available clips in this category)*")
             continue
 
-        # Filter out clips that require transformations not yet established
-        available_in_category = []
-        for clip in clips:
-            # Check if clip filename suggests it's from a transformed state
-            clip_lower = clip.filename.lower()
-            requires_awakening = any(
-                term in clip_lower for term in ["final form", "ff", "awakened", "partial", "transformed"]
-            )
-            
-            # Check if transformation is required and established
-            if requires_awakening:
-                if not established_abilities.get("partial_awakening_shown", False) and not established_abilities.get("full_awakening_shown", False):
-                    continue  # Skip clips requiring transformation if not transformed
-            
-            available_in_category.append(clip)
+        # Show all available clips without transformation filtering
+        available_in_category = clips
 
         if not available_in_category and missing_prereqs:
             lines.append(f"*(Category locked — missing prerequisites: {', '.join(missing_prereqs)})*")

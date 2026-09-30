@@ -115,11 +115,12 @@ class AsyncRateLimiter:
 class ModelClient:
     """Wrapper for a single LLM client with metadata."""
     
-    def __init__(self, name: str, client: Any, rate_limiter: AsyncRateLimiter | None = None, is_qwen: bool = False):
+    def __init__(self, name: str, client: Any, rate_limiter: AsyncRateLimiter | None = None, is_qwen: bool = False, timeout: float | None = None):
         self.name = name
         self.client = client
         self.rate_limiter = rate_limiter
         self.is_qwen = is_qwen
+        self.timeout = timeout  # seconds
     
     async def generate(self, message: Message) -> str | None:
         """Generate response with optional rate limiting."""
@@ -140,10 +141,9 @@ class ModelClient:
                     
                     # Run frame extraction in thread pool to avoid blocking event loop
                     loop = asyncio.get_event_loop()
-                    frames = await loop.run_in_executor(
-                        None,
-                        self._sample_frames_for_qwen,
-                        video_path
+                    frames = await asyncio.wait_for(
+                        loop.run_in_executor(None, self._sample_frames_for_qwen, video_path),
+                        timeout=30.0  # 30s timeout for frame extraction
                     )
                     
                     if not frames:
@@ -153,8 +153,12 @@ class ModelClient:
                     frame_media = [MediaFile(path=frame) for frame in frames]
                     qwen_msg = Message(text=message.text, media=frame_media)
                     
-                    # Run model inference in thread pool too
-                    response = await loop.run_in_executor(None, self.client.generate, qwen_msg)
+                    # Run model inference in thread pool with timeout
+                    inference_timeout = self.timeout or 120.0  # default 120s
+                    response = await asyncio.wait_for(
+                        loop.run_in_executor(None, self.client.generate, qwen_msg),
+                        timeout=inference_timeout
+                    )
                     
                     # Cleanup frames
                     for frame in frames:
@@ -168,12 +172,27 @@ class ModelClient:
                         pass
                     
                     return response.text.strip() if response else None
+                except asyncio.TimeoutError:
+                    print(f"[{self.name}] Timeout after {self.timeout or 120}s", file=sys.stderr, flush=True)
+                    return None
                 except Exception as e:
                     print(f"[{self.name}] Frame processing error: {e}", file=sys.stderr, flush=True)
                     return None
             
-            response = self.client.generate(message)
+            # Standard model call with optional timeout
+            if self.timeout:
+                loop = asyncio.get_event_loop()
+                response = await asyncio.wait_for(
+                    loop.run_in_executor(None, self.client.generate, message),
+                    timeout=self.timeout
+                )
+            else:
+                response = self.client.generate(message)
+            
             return response.text.strip() if response else None
+        except asyncio.TimeoutError:
+            print(f"[{self.name}] Timeout after {self.timeout}s", file=sys.stderr, flush=True)
+            return None
         except Exception as e:
             print(f"[{self.name}] Generation error: {e}", file=sys.stderr, flush=True)
             return None
@@ -253,8 +272,8 @@ class MultiModelTranscriber:
         try:
             qwen_model = os.environ.get("OLLAMA_FALLBACK_MODEL", "fredrezones55/Qwen3.5-APEX:latest")
             client_qwen = get_client("ollama", model=qwen_model)
-            self.models.append(ModelClient("QWEN", client_qwen, rate_limiter=None, is_qwen=True))
-            print("[INFO] Initialized Qwen (no rate limit, frame preprocessing)", file=sys.stderr)
+            self.models.append(ModelClient("QWEN", client_qwen, rate_limiter=None, is_qwen=True, timeout=180.0))
+            print("[INFO] Initialized Qwen (no rate limit, 180s timeout, frame preprocessing)", file=sys.stderr)
         except Exception as e:
             print(f"[WARN] Qwen init failed: {e}", file=sys.stderr)
         

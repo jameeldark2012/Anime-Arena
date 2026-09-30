@@ -37,6 +37,12 @@ async def prepare_opponent_media(
     match_id: int,
     turn: int,
 ) -> list[dict]:
+    """Download opponent clips and extract transcripts (if STT enabled).
+    
+    TODO: Currently disabled for performance (OPPONENT_STT_ENABLED=false).
+    Re-enable when speech/dialogue becomes critical for combat decisions.
+    Transcripts are now wired into ai_player.py prompts.
+    """
     try:
         return await _prepare_opponent_media(
             actions=actions,

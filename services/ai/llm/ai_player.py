@@ -208,11 +208,14 @@ async def decide_turn(
         )
         for index, item in enumerate(opponent_media or [], 1):
             action = item.get("action", {})
+            transcript = item.get("transcript", "")
             trigger_prompt += (
                 f"\nAttached current-turn opponent video {index}: {item.get('filename', 'video')} "
                 f"(action={action.get('action_type')}, tier={action.get('tier') or 'custom'}). "
                 "Inspect this video for evidence relevant to the trigger conditions."
             )
+            if transcript:
+                trigger_prompt += f"\nClip transcript: \"{transcript}\""
         media_content = await asyncio.to_thread(_upload_opponent_media, opponent_media or [])
         trigger_results, trigger_used_ollama = await _request_trigger_classification(
             prompt=trigger_prompt,
@@ -692,9 +695,13 @@ def _build_opponent_media_instructions(
     ]
     for index, item in enumerate(opponent_media, 1):
         action = item["action"]
-        lines.append(
-            f"{index}. {item['filename']} | action={action.get('action_type')} | tier={action.get('tier') or 'custom'}"
-        )
+        transcript = item.get("transcript", "")
+        header = f"{index}. {item['filename']} | action={action.get('action_type')} | tier={action.get('tier') or 'custom'}"
+        # Transcript is extracted but disabled by default for performance (config.env)
+        # Re-enable OPPONENT_STT_ENABLED=true when dialogue becomes critical for decisions
+        if transcript:
+            header += f"\n   Clip transcript: \"{transcript}\""
+        lines.append(header)
     return "\n".join(lines)
 
 
