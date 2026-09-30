@@ -22,6 +22,8 @@ class Settings:
     REFEREE_ROLE_ID: int
     GOOGLE_API_KEY: str | None
     GOOGLE_MODEL: str | None
+    OPPONENT_TRANSCRIPT_TRANSLATION_ENABLED: bool
+
     def __init__(self) -> None:
         self.DISCORD_BOT_TOKEN = self._required("DISCORD_BOT_TOKEN")
         self.DATABASE_URL = self._required("DATABASE_URL")
@@ -31,6 +33,10 @@ class Settings:
         self.DEBUG = self._bool("DEBUG", False)
         self.GOOGLE_API_KEY = self._optional("GOOGLE_API_KEY")
         self.GOOGLE_MODEL = self._optional("GOOGLE_MODEL")
+        self.OPPONENT_TRANSCRIPT_TRANSLATION_ENABLED = self._bool(
+            "OPPONENT_TRANSCRIPT_TRANSLATION_ENABLED",
+            True,
+        )
 
     @staticmethod
     def _optional(name: str) -> str | None:

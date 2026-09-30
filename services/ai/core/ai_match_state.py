@@ -5,8 +5,8 @@ the extra data the AI needs to make decisions.
 """
 from __future__ import annotations
 
-from services.ai.character_rules import CharacterRules
-from services.ai.clip_catalog import ClipCatalog
+from services.ai.core.character_rules import CharacterRules
+from services.ai.core.clip_catalog import ClipCatalog
 from services.match.match_manager_service import MatchState
 
 
@@ -57,6 +57,7 @@ class AIMatchState(MatchState):
 
         self.character_rules: CharacterRules = character_rules
         self.clip_catalog: ClipCatalog = clip_catalog
+        self.active_trigger_overrides: set[str] = set()
 
         # Structured turn log — each entry is a plain-text summary of a completed turn.
         # Each summary contains both what the opponent did and how the AI answered,
@@ -180,7 +181,7 @@ class AIMatchState(MatchState):
         context["ai_response"] = normalized_actions
         context["ai_dialogue"] = dialogue
 
-        opponent_descriptions = context.get("opponent_descriptions") or self.latest_opponent_descriptions()
+        opponent_descriptions = context.get("opponent_descriptions")
         opponent_dialogue = context.get("opponent_dialogue") or []
         opponent_summary = ""
         if isinstance(opponent_descriptions, list) and opponent_descriptions:
@@ -188,7 +189,7 @@ class AIMatchState(MatchState):
             if len(opponent_descriptions) > 1:
                 opponent_summary = "; ".join(opponent_descriptions[:2])
         else:
-            opponent_summary = "an unseen opponent action"
+            opponent_summary = "No opponent analysis was provided; please provide one next time"
 
         response_text = ", ".join(normalized_actions) if normalized_actions else "no response"
         opponent_dialogue_text = (
@@ -196,10 +197,12 @@ class AIMatchState(MatchState):
             if isinstance(opponent_dialogue, list) and opponent_dialogue
             else ""
         )
-        dialogue_text = f' Clare said: "{dialogue}"' if dialogue else ""
+        character_name = getattr(self.character_rules, "name", "The AI")
+        dialogue_text = f' {character_name} said: "{dialogue}"' if dialogue else ""
         summary = (
-            f"Turn {turn}: Opponent did {opponent_summary}.{opponent_dialogue_text} "
-            f"I responded with {response_text}.{dialogue_text}"
+            f"Turn {turn}: "
+            f"Opponent past turn: {opponent_summary}.{opponent_dialogue_text} "
+            f"My past turn: {response_text}.{dialogue_text}"
         )
         self.record_turn(summary)
 
@@ -229,7 +232,7 @@ class AIMatchState(MatchState):
         return self.opponent_dialogue[latest_turn]
 
     def previous_ai_dialogues(self) -> list[str]:
-        """Return Clare's prior spoken lines in chronological order."""
+        """Return the AI character's prior spoken lines in chronological order."""
         return [
             str(entry["ai_dialogue"])
             for entry in self.turn_context_log
@@ -248,3 +251,10 @@ class AIMatchState(MatchState):
     def ability_is_established(self, ability_name: str) -> bool:
         """Check if an ability has been established/shown."""
         return self.established_abilities.get(ability_name, False)
+
+    def activate_trigger_overrides(self, trigger_results: dict[str, bool]) -> None:
+        """Latch satisfied permanent trigger overrides for the rest of this match."""
+        for trigger_name, satisfied in trigger_results.items():
+            override = (self.character_rules.trigger_overrides or {}).get(trigger_name)
+            if satisfied and override and override["duration"] == "permanent":
+                self.active_trigger_overrides.add(trigger_name)

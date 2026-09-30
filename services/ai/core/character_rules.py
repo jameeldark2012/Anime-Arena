@@ -4,15 +4,21 @@ CharacterRules is the structured object that gets rendered into the prompt.
 It encodes personality, abilities, mandatory combat sequencing rules,
 tier capabilities, and physical constraints.
 
-Each character gets their own instance in services/ai/characters/.
+Each character gets their own instance in services/ai/llm/characters/.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Literal, TypedDict
 
 Tier = Literal["Normal", "Medium", "Absolute", "Over-Absolute"]
+
+
+class TriggerOverride(TypedDict):
+    condition: str
+    duration: Literal["temporary", "permanent"]
+    replacements: dict[str, str]
 
 
 @dataclass
@@ -49,6 +55,10 @@ class CharacterRules:
         Maps game tiers to what this character can realistically produce
         at each state. Used to validate tier choices.
         Example: {"Normal": "standard sword attacks", "Medium": "Quicksword or aura burst"}
+    has_defense:
+        Whether this character has any defensive capabilities (blocking, dodging, counters).
+        Set to False for characters like Zeke who have no defense mechanics at all.
+        Defaults to True.
     defense_notes:
         What defensive options this character physically has and lacks.
         The AI uses this to pick logically valid defenses.
@@ -64,6 +74,7 @@ class CharacterRules:
     abilities: list[Ability] = field(default_factory=list)
     combat_rules: list[str] = field(default_factory=list)
     tier_capabilities: dict[Tier, str] = field(default_factory=dict)
+    has_defense: bool = True
     defense_notes: str = ""
     category_to_action_type: dict[str, dict] = field(default_factory=dict)
     # e.g. {"Normal Attack": {"action_type": "attack", "tier": "Normal"},
@@ -78,6 +89,15 @@ class CharacterRules:
     # Maps action categories to prerequisite abilities/state
     # e.g., {"Medium attack final form": ["partial_awakening_shown"]}
     category_prerequisites: dict[str, list[str]] = field(default_factory=dict)
+
+    # Override escalation rule - if set, this rule replaces the default slow-burn escalation
+    escalation_override: str | None = None
+
+    # Override delayed escalation rule - if set, this rule replaces the default delayed escalation
+    delayed_escalation_override: str | None = None
+
+    # Keyed by trigger name; each value defines its condition and rule replacement.
+    trigger_overrides: dict[str, TriggerOverride] | None = None
 
     def render_for_prompt(self) -> str:
         """Render this ruleset as a concise prompt block."""
@@ -105,6 +125,16 @@ class CharacterRules:
         if self.defense_notes:
             lines.append("### Defense Capabilities")
             lines.append(self.defense_notes)
+            lines.append("")
+
+        if not self.has_defense:
+            lines.append("### Defensive Limitations")
+            lines.append(
+                "This character has NO defensive capabilities (no blocking, dodging, "
+                "counter-attacks, or evasion). They cannot defend against incoming attacks. "
+                "When the opponent attacks, they must accept the damage and focus on "
+                "offensive pressure to win."
+            )
             lines.append("")
 
         if self.combat_rules:

@@ -39,6 +39,26 @@ async def _pick_random_clip_for_tier(boss_state: BossState, tier: str) -> tuple[
     return await _read_clip(random.choice(clips))
 
 
+async def _warm_whisper_post_turn(boss_state: BossState) -> None:
+    """Warm Whisper after a turn completes to avoid blocking turn execution.
+    
+    Only loads if Gemini was used (Ollama fallback means Whisper was just unloaded).
+    This is non-blocking - it returns immediately.
+    """
+    try:
+        from services.ai.llm.ai_player import warm_whisper_after_turn
+        # Call without await - we don't want to block the turn completion
+        asyncio.create_task(warm_whisper_after_turn())
+    except ImportError:
+        debug_event("opponent_speech_to_text_skipped", reason="faster_whisper_not_installed")
+    except Exception as exc:
+        debug_event(
+            "opponent_speech_to_text_model_warm_failed",
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
+
+
 async def _post_clip(
     channel: discord.abc.Messageable,
     label: str,
@@ -307,7 +327,10 @@ async def run_boss_turn(
         embed = await generate_turn_embed(boss_state, turn_summary)
         await channel.send(content=f"⚔️ **{config.display_name}** ended their turn.", embed=embed)
 
-        return await _handle_post_turn(boss_state, channel, turn_summary, post_clip_path)
+        post_turn_result = await _handle_post_turn(boss_state, channel, turn_summary, post_clip_path)
+        # Warm Whisper after turn completes (non-blocking, loads only if Gemini was used)
+        await _warm_whisper_post_turn(boss_state)
+        return post_turn_result
 
     # =========================================================================
     # HOOK-BASED PATH
@@ -387,6 +410,9 @@ async def run_boss_turn(
     # Post-turn flavour + respawn + win/loss.
     turn_end_path = script.on_turn_end(boss_state)
     turn_summary = await _handle_post_turn(boss_state, channel, turn_summary, turn_end_path)
+
+    # Warm Whisper after turn completes (non-blocking, loads only if Gemini was used)
+    await _warm_whisper_post_turn(boss_state)
 
     # Reaction clips (hook path only).
     if not turn_summary.get("winner_id"):

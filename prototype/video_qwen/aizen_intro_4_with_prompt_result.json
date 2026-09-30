@@ -1,0 +1,25 @@
+{
+  "video": "E:\\D2\\Fighting\\Aizen\\Intros\\Intro 4 walks to u, death is fitting for whats gon.mp4",
+  "model": "qwen3.5:9b",
+  "whisper_model": "tiny",
+  "prompt_file": "C:\\Users\\jamee\\OneDrive\\\u0633\u0637\u062d \u0627\u0644\u0645\u0643\u062a\u0628\\test prompt.txt",
+  "frame_count": 2,
+  "transcript": "\u7d50\u69cb\u306f\u3053\u3068\u3058\u3083\u306a\u3044\u304b\u3001\u6b7b\u306e\u58f0\u3092\u884c\u304f\u305e\u3001\u3053\u306e\u5149\u666f\u306b\u3075\u3055\u308f\u3057",
+  "ollama_response": {
+    "model": "qwen3.5:9b",
+    "created_at": "2026-09-28T14:38:19.0238313Z",
+    "message": {
+      "role": "assistant",
+      "content": "{\n  \"visible_action\": \"Sousuke Aizen stands in a composed, upright stance amidst swirling flames and energy trails. He appears to be observing the scene with a calm, detached expression, surrounded by what looks like the aftermath of a powerful attack or a display of his Reiatsu.\",\n  \"spoken_words\": \"\\\"Kekka wa koto ja nai ka, shi no koe o iku zo, kono koukei ni fushawashi\\\" (It's not about form, I will walk the voice of death, this scene is fitting)\",\n  \"tactical_summary\": \"Aizen is using a custom action to establish presence and set the mood. He is not attacking or defending directly but rather making a statement about the nature of the fight and his own power. The flames around him suggest he may have just used a powerful technique or is preparing for one.\",\n  \"confidence\": 0.95\n}"
+    },
+    "done": true,
+    "done_reason": "stop",
+    "total_duration": 47971583300,
+    "load_duration": 15754504900,
+    "prompt_eval_count": 17710,
+    "prompt_eval_cached_count": 0,
+    "prompt_eval_duration": 17467239000,
+    "eval_count": 196,
+    "eval_duration": 14653145000
+  }
+}

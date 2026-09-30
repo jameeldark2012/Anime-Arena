@@ -6,6 +6,7 @@ This module reads all of them and builds a structured index the AI can reason ab
 from __future__ import annotations
 
 import json
+import random
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -58,6 +59,11 @@ class ClipCatalog:
             return None
         return clip
 
+    def pick_available(self, category: str) -> ClipEntry | None:
+        """Return one unused clip from a category, or None when exhausted."""
+        clips = self.clips_for(category)
+        return random.choice(clips) if clips else None
+
     def mark_used(self, clip_filename: str) -> None:
         """Mark a clip as used; using an intro consumes the whole intro category."""
         # Look up the clip first to get its actual filename (case-sensitive)
@@ -108,14 +114,12 @@ def load_catalog(root: str | Path) -> ClipCatalog:
 
     catalog = ClipCatalog(root=base)
 
-    for folder in sorted(base.iterdir()):
-        if not folder.is_dir():
-            continue
-        # Skip hidden folders like .video_analysis_manifest
-        if folder.name.startswith("."):
+    for folder in sorted(path for path in base.rglob("*") if path.is_dir()):
+        relative_parts = folder.relative_to(base).parts
+        if any(part.startswith(".") for part in relative_parts):
             continue
 
-        category = folder.name
+        category = ".".join(relative_parts)
         entries: list[ClipEntry] = []
 
         for video_path in sorted(folder.iterdir()):

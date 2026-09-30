@@ -17,15 +17,15 @@ from typing import TYPE_CHECKING
 
 from boss.boss_script import BossScript
 from core.debug import debug_event
-from services.ai.ai_player import AITurnDecision, choose_intro_clip, decide_turn
-from services.ai.characters.clare import build_clare_rules
-from services.ai.clip_catalog import load_catalog
-from services.ai.opponent_analysis import cleanup_opponent_media, prepare_opponent_media
+from services.ai.llm.ai_player import AITurnDecision, choose_intro_clip, decide_turn
+from services.ai.llm.characters.clare import build_clare_rules
+from services.ai.core.clip_catalog import load_catalog
+from services.ai.llm.opponent_analysis import cleanup_opponent_media, prepare_opponent_media
 from services.content.character_profile_service import get_profile_by_name
 
 if TYPE_CHECKING:
     from boss.boss_state import BossState
-    from services.ai.ai_match_state import AIMatchState
+    from services.ai.core.ai_match_state import AIMatchState
 
 logger = logging.getLogger(__name__)
 
@@ -139,7 +139,7 @@ class ClareBossScript(BossScript):
             self._profile_loaded = True
 
         # Build a lightweight match context from BossState
-        from services.ai.ai_match_state import AIMatchState
+        from services.ai.core.ai_match_state import AIMatchState
         if self._ai_state is None:
             self._ai_state = _build_ai_state_from_boss(state, self._rules, self._catalog)
         else:
@@ -171,7 +171,6 @@ class ClareBossScript(BossScript):
             if not self._intro_played:
                 self._pending_intro = decision.intro_clip_filename
             descriptions = decision.opponent_analysis
-            self._ai_state.record_opponent_analysis(analysis_turn, descriptions)
             self._last_analyzed_turn = analysis_turn
             debug_event(
                 "clare_opponent_context_recorded",
@@ -284,12 +283,8 @@ class ClareBossScript(BossScript):
 
     def on_victory(self, state: BossState) -> Path | None:
         rp_dir = CLARE_CLIPS_ROOT / "RP"
-        candidates = ["I wont forgive you, ill kill you.mp4", "Climax RP GOAT AURA I WILL KILL U.mp4"]
-        for name in candidates:
-            p = rp_dir / name
-            if p.exists():
-                return p
-        return None
+        victory_clip = rp_dir / "Sword dripping blood standing behind killed one.mp4"
+        return victory_clip if victory_clip.exists() else None
 
     def on_defeat(self, state: BossState) -> Path | None:
         rp_dir = CLARE_CLIPS_ROOT / "RP"
@@ -330,11 +325,8 @@ class ClareBossScript(BossScript):
 
     def _fallback_turn(self, state: BossState) -> tuple[Path | None, str, Path | None, Path | None]:
         """Return a random Normal attack as a safe fallback."""
-        attack_dir = CLARE_CLIPS_ROOT / "Normal Attack"
-        clips = []
-        if attack_dir.exists():
-            clips = [p for p in attack_dir.iterdir() if p.suffix.lower() in {".mp4", ".mov", ".webm", ".mkv"}]
-        attack_path = random.choice(clips) if clips else None
+        clip = self._catalog.pick_available("Normal Attack") if self._catalog is not None else None
+        attack_path = clip.path if clip else None
         if attack_path is not None and self._catalog is not None:
             self._catalog.mark_used(attack_path.name)
         return None, "Normal", attack_path, None
@@ -346,7 +338,7 @@ class ClareBossScript(BossScript):
 
 def _build_ai_state_from_boss(state: BossState, rules, catalog) -> "AIMatchState":
     """Create a minimal AIMatchState from the current BossState for the AI call."""
-    from services.ai.ai_match_state import AIMatchState
+    from services.ai.core.ai_match_state import AIMatchState
     from boss.boss_config import BOSS_PLAYER_ID
 
     ai_state = AIMatchState.__new__(AIMatchState)
@@ -365,6 +357,7 @@ def _build_ai_state_from_boss(state: BossState, rules, catalog) -> "AIMatchState
     ai_state.status = getattr(state, "status", "active")
     ai_state.character_rules = rules
     ai_state.clip_catalog = catalog
+    ai_state.active_trigger_overrides = set()
     ai_state.turn_history_log = []
     ai_state.turn_context_log = []
     ai_state.opponent_clip_descriptions = {}

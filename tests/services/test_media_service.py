@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 from services import media_service
@@ -57,3 +58,37 @@ def test_validate_h264_clip_rejects_non_h264(monkeypatch):
 
     out = __import__("asyncio").run(media_service.validate_h264_clip("https://example.com/test.mp4"))
     assert out == (b"video-bytes", "vp9")
+
+
+def test_sample_video_frames_uses_duration_scaled_fps(monkeypatch, tmp_path):
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"video")
+
+    monkeypatch.setattr(media_service.shutil, "which", lambda prog: "/usr/bin/ffmpeg" if prog == "ffmpeg" else None)
+    monkeypatch.setattr(media_service, "probe_video_duration", lambda _: 20.0)
+
+    expected_count = 100
+    commands = []
+
+    def fake_run(cmd, capture_output, check, **kwargs):
+        commands.append(cmd)
+        frame_dir = Path(cmd[-1]).parent
+        frame_dir.mkdir(parents=True, exist_ok=True)
+        for i in range(expected_count):
+            (frame_dir / f"frame_{i:02d}.jpg").write_bytes(b"jpg")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(media_service.subprocess, "run", fake_run)
+
+    frames = media_service.sample_video_frames(
+        video,
+        min_frames=8,
+        max_frames=120,
+        fps=5.0,
+        max_dimension=448,
+    )
+
+    assert len(frames) == expected_count
+    assert all(frame.suffix.lower() == ".jpg" for frame in frames)
+    assert "-vf" in commands[0]
+    assert "scale=448:448:force_original_aspect_ratio=decrease" in commands[0]
